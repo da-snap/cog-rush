@@ -16,14 +16,12 @@ export const LIVES = 20
 export const SELL_REFUND_PCT = 75
 
 export const WAVE_EVERY_S = 30
-export const FIRST_WAVE_S = 20 // ponytail: prep phase reused as the first-wave delay; sending isn't in the sandbox yet
+export const FIRST_WAVE_S = 30 // default for gap 3: first neutral wave 10 s after prep ends
 export const WAVE_HP_GROWTH_PCT = 8
-export const SPAWN_GAP_TICKS = 10 // 0.5 s between robots of one wave
 
 export const BREACH = {
   speedPct: 150,
   towerDmgMult: 3,
-  baseTowerDps: 10, // not in the GDD yet: robot damage vs towers before the 3x Breach multiplier
   hpCostPer: 50, // breach field: crossing a tower cell costs 1 + hp/50 steps
 }
 
@@ -36,18 +34,109 @@ export const ARMOR_MULT_PCT: Record<DamageType, Record<Armor, number>> = {
   energy: { light: 100, heavy: 50, shielded: 150 },
 }
 
-export type TowerKind = 'gatling'
-export const TOWERS: Record<TowerKind, { cost: number; hp: number; rangeMc: number; dps: number; dmg: DamageType }> = {
-  gatling: { cost: 25, hp: 250, rangeMc: 3000, dps: 15, dmg: 'kinetic' },
+// Upgrades: L2 costs 1x base, L3 2x base. Each level: +60% dmg, +10% range, +25% HP (compounding).
+export const UPGRADE = { costMult: [1, 2], dmgPct: 160, rangePct: 110, hpPct: 125 }
+
+export type Attack = 'single' | 'splash' | 'aura' | 'chain' | 'beam'
+export interface TowerDef {
+  name: string; cost: number; hp: number; rangeMc: number; dps: number; dmg: DamageType
+  ground: boolean; air: boolean; attack: Attack
+  period: number // ticks between shots; damage per shot = dps * period / TICK_HZ
+  splashMc?: number; slowPct?: number; chain?: number; chainMc?: number; beamMc?: number
+  branches: [Branch, Branch]
+}
+export interface Branch { key: string; name: string; desc: string }
+
+export const TOWERS = {
+  gatling: {
+    name: 'Gatling', cost: 25, hp: 250, rangeMc: 3000, dps: 15, dmg: 'kinetic', ground: true, air: true, attack: 'single', period: 2,
+    branches: [{ key: 'pierce', name: 'Armor-piercing', desc: 'Ignores armor type' }, { key: 'overdrive', name: 'Overdrive', desc: '+80% fire rate' }],
+  },
+  flak: {
+    name: 'Flak', cost: 40, hp: 220, rangeMc: 4000, dps: 25, dmg: 'explosive', ground: false, air: true, attack: 'splash', period: 10, splashMc: 750,
+    branches: [{ key: 'longRange', name: 'Long range', desc: '+50% range' }, { key: 'shrapnel', name: 'Shrapnel', desc: 'Wider splash' }],
+  },
+  emp: {
+    name: 'EMP', cost: 50, hp: 220, rangeMc: 2500, dps: 5, dmg: 'energy', ground: true, air: true, attack: 'aura', period: 10, slowPct: 40,
+    branches: [{ key: 'stun', name: 'Stun pulse', desc: 'Stuns robots in range every 5 s' }, { key: 'overload', name: 'Overload', desc: 'Slowed robots take +25% damage' }],
+  },
+  mortar: {
+    name: 'Mortar', cost: 60, hp: 250, rangeMc: 4000, dps: 18, dmg: 'explosive', ground: true, air: false, attack: 'splash', period: 30, splashMc: 1000,
+    branches: [{ key: 'burn', name: 'Burning ground', desc: 'Impact cell burns for 3 s' }, { key: 'cluster', name: 'Cluster shells', desc: '3 smaller impacts' }],
+  },
+  tesla: {
+    name: 'Tesla', cost: 70, hp: 250, rangeMc: 2500, dps: 15, dmg: 'energy', ground: true, air: true, attack: 'chain', period: 10, chain: 3, chainMc: 1500,
+    branches: [{ key: 'chain5', name: 'Chain 5', desc: 'Chains to 5 targets' }, { key: 'arcFocus', name: 'Arc focus', desc: '+100% damage, chains to 1' }],
+  },
+  laser: {
+    name: 'Laser', cost: 90, hp: 270, rangeMc: 5000, dps: 30, dmg: 'energy', ground: true, air: false, attack: 'beam', period: 1, beamMc: 400,
+    branches: [{ key: 'wide', name: 'Wide beam', desc: 'Wider beam' }, { key: 'melt', name: 'Melt', desc: 'Damage ramps up on the same target' }],
+  },
+} satisfies Record<string, TowerDef>
+export type TowerKind = keyof typeof TOWERS
+export const TOWER_KINDS = Object.keys(TOWERS) as TowerKind[]
+
+// Branch numbers the GDD doesn't give yet (placeholders, tune freely).
+export const BRANCH = {
+  overdrivePct: 180,
+  longRangePct: 150,
+  shrapnelSplashMc: 1500,
+  stunEveryTicks: 100, stunTicks: 20, // stun lasts 1 s
+  overloadPct: 125,
+  burnTicks: 60, burnDpsPct: 50, // burning cell: 50% of the mortar's dps for 3 s
+  clusterOffsetsMc: [[0, 0], [-800, 0], [800, 0]], clusterDmgPct: 50, clusterSplashMc: 600,
+  chain5: 5, arcFocusDmgPct: 200,
+  wideBeamMc: 900,
+  meltRampPctPerS: 20, meltMaxPct: 300,
 }
 
-export type RobotKind = 'scout' | 'tank'
-export const ROBOTS: Record<RobotKind, { armor: Armor; hp: number; speedMcPerS: number; sendCost: number }> = {
-  scout: { armor: 'light', hp: 60, speedMcPerS: 2000, sendCost: 10 },
-  tank: { armor: 'heavy', hp: 400, speedMcPerS: 800, sendCost: 40 },
+export type RobotKind = 'scout' | 'drone' | 'repair' | 'shield' | 'tank' | 'splitter' | 'breaker' | 'colossus'
+export interface RobotDef {
+  name: string; armor: Armor; air: boolean; hp: number; speedMcPerS: number
+  sendCost: number; income: number; buildS: number; maxWave: number; factoryCost: number
+  towerDps: number // open design gap 1: placeholder damage vs towers (Breach multiplies by 3)
 }
+export const ROBOTS: Record<RobotKind, RobotDef> = {
+  scout: { name: 'Scout', armor: 'light', air: false, hp: 60, speedMcPerS: 2000, sendCost: 10, income: 1, buildS: 1, maxWave: 12, factoryCost: 0, towerDps: 10 },
+  drone: { name: 'Drone', armor: 'light', air: true, hp: 120, speedMcPerS: 1400, sendCost: 25, income: 2, buildS: 3, maxWave: 6, factoryCost: 120, towerDps: 0 },
+  repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, income: 3, buildS: 4, maxWave: 3, factoryCost: 150, towerDps: 10 },
+  shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, income: 3, buildS: 4, maxWave: 3, factoryCost: 150, towerDps: 10 },
+  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 400, speedMcPerS: 800, sendCost: 40, income: 4, buildS: 5, maxWave: 4, factoryCost: 150, towerDps: 10 },
+  splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, income: 4, buildS: 5, maxWave: 3, factoryCost: 180, towerDps: 10 },
+  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 300, speedMcPerS: 900, sendCost: 50, income: 5, buildS: 6, maxWave: 3, factoryCost: 200, towerDps: 20 },
+  colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, income: 30, buildS: 30, maxWave: 1, factoryCost: 400, towerDps: 40 },
+}
+export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 
-// ponytail: fixed neutral pattern, "small and predictable". Swap for a table when more robot types land.
+export const AURA = { repairMc: 2000, repairHps: 10, shieldMc: 2000, shieldHp: 50 }
+
+// Factories and sending. Values marked "default" are not in the GDD yet.
+export const FACTORY = {
+  slots: 4, // Scout is free and uses no slot
+  upgradeCostMult: [1, 2], // default: L2 = 1x factory cost, L3 = 2x (like towers)
+  scoutUpgradeCost: 100, // default: Scout factory has no build cost to scale from
+  hpPctPerLevel: 25,
+  waveCapPctPerLevel: 50, // default: max per wave +50% per level
+}
+export const SEND = {
+  prepS: 20,
+  hpPct: 150, // balance: sent robots get 1.5x the GDD HP (neutrals use the base table)
+  scaleWithWaves: true, // balance: sent robots also get the neutral waves' HP growth, so sends stay relevant late
+  previewS: 4,
+  gapTicks: 10, // 0.5 s between robots of a released wave
+  bountyPct: 25, // to the defender, also for neutral kills (default for gap 2)
+  leakPct: 50, // to the sender
+  colossusFromS: 300, // default: gate is on sending
+}
+export const SUDDEN = { fromS: 600, everyS: 15, hpGrowthPct: 30 }
+
+// ponytail: fixed 4-wave neutral cycle, "small and predictable", one extra Scout every 4 waves.
 export function neutralWave(n: number): RobotKind[] {
-  return n % 3 === 2 ? ['tank', 'tank', 'scout', 'scout'] : Array(6).fill('scout')
+  const base = ([
+    ['scout', 'scout', 'scout', 'scout'],
+    ['scout', 'scout', 'drone', 'drone'],
+    ['tank', 'scout', 'scout'],
+    ['shield', 'scout', 'scout'],
+  ] as RobotKind[][])[n % 4]
+  return [...base, ...Array(Math.floor(n / 4)).fill('scout')]
 }

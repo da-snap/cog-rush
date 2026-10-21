@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
-    "test": "node src/sim/sim.test.ts"
+    "test": "node src/sim/sim.test.ts",
+    "balance": "node src/sim/run.ts"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
