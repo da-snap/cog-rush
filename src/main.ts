@@ -240,12 +240,12 @@ function buildHtml(g: Game, L: Lane): string {
   }
   const st = towerStats(t), d = TOWERS[t.kind]
   const branch = t.branch ? d.branches.find(b => b.key === t.branch)!.name : ''
-  const info = `<b style="color:${hex(VIS.tower[t.kind].color)}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${t.maxHp / 1000} · ${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`
+  const info = `<b style="color:${hex(VIS.tower[t.kind].color)}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${Math.round(t.maxHp / 1000)} · ${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`
   let up: string
   if (t.level === 1) up = btn('upgrade', `Upgrade ${upgradeCost(t)}`, { sub: '+60% dmg, +10% range', off: !!canUpgrade(L, t.x, t.y) })
   else if (t.level === 2) up = d.branches.map(b => btn('upgrade', `${b.name} ${upgradeCost(t)}`, { arg: b.key, sub: b.desc, off: !!canUpgrade(L, t.x, t.y, b.key) })).join('')
   else up = btn('noop', 'Max level', { cls: 'alt', off: true })
-  return `<div class="info">${info}</div><div class="row">${up}${btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt' })}</div>`
+  return `<div class="info">${info}</div><div class="info">${TOWER_ROLE[t.kind]}</div><div class="row">${up}${btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt' })}</div>`
 }
 
 const legend = () => `<div class="info" style="font-size:12px">Kinetic beats <b>Light</b> · Explosive beats <b>Heavy</b> · Energy beats <b>Shielded</b></div>`
