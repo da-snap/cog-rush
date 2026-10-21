@@ -1,6 +1,6 @@
 // Run: npm test (node strips the types). Plain asserts, no framework.
 import assert from 'node:assert/strict'
-import { COLS, MC, ROBOTS, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
+import { AURA, COLS, MC, ROBOTS, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
 import { INF, damage, newGame, spawn, step, towerStats, wouldSeal, type Cmd, type Game, type Lane } from './sim.ts'
 
 type C = Cmd extends infer T ? T extends Cmd ? Omit<T, 'p'> : never : never
@@ -226,7 +226,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   put(g2, L2, 'repair', 6, 6)
   a.hp = 50 * MC
   quiet(g2)
-  assert.equal(a.shield, 50 * MC)
+  assert.equal(a.shield, AURA.shieldHp * MC * 1.5, "shield scales like sent HP (1.5x at the start)")
   assert.ok(a.hp > 50 * MC)
 }
 

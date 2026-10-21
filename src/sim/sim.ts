@@ -52,7 +52,7 @@ export interface Lane {
 }
 export interface Game {
   tick: number; lanes: Lane[]; nextId: number
-  wave: number; nextWaveTick: number; waveHpBp: number
+  wave: number; nextWaveTick: number; waveHpBp: number; sendHpBp: number
   winner: number // -1 running, -2 draw, else lane index
   events: Ev[] // events from the last step only
 }
@@ -81,7 +81,7 @@ export function newLane(p: number): Lane {
 export function newGame(players = 2): Game {
   return {
     tick: 0, lanes: Array.from({ length: players }, (_, p) => newLane(p)), nextId: 1,
-    wave: 0, nextWaveTick: FIRST_WAVE_S * TICK_HZ, waveHpBp: 10000, winner: -1, events: [],
+    wave: 0, nextWaveTick: FIRST_WAVE_S * TICK_HZ, waveHpBp: 10000, sendHpBp: 10000, winner: -1, events: [],
   }
 }
 
@@ -267,6 +267,8 @@ export function step(g: Game, cmds: Cmd[]): void {
   if (g.winner !== -1) return
   for (const c of cmds) apply(g, c)
 
+  if (g.tick > 0 && g.tick % (60 * TICK_HZ) === 0) g.sendHpBp = Math.floor(g.sendHpBp * (100 + SEND.hpGrowthPctPerMin) / 100)
+
   // income (frozen while sealed)
   if (g.tick > 0 && g.tick % (INCOME_EVERY_S * TICK_HZ) === 0) for (const L of g.lanes) {
     if (!L.sealed) L.gold += L.income
@@ -293,7 +295,7 @@ export function step(g: Game, cmds: Cmd[]): void {
     while (L.incoming.length && L.incoming[0].at <= g.tick) L.spawnQueue.push(...L.incoming.shift()!.robots)
     if (L.spawnQueue.length && g.tick % SEND.gapTicks === 0) spawn(g, L, L.spawnQueue.shift()!)
 
-    applyStatus(L)
+    applyStatus(g, L)
     moveRobots(g, L)
     burnGround(g, L)
     fireTowers(g, L)
@@ -371,8 +373,7 @@ function apply(g: Game, c: Cmd) {
       const ready = L.queue.filter(q => q.left === 0)
       L.queue = L.queue.filter(q => q.left > 0)
       const target = g.lanes[opponent(g, L.p)]
-      const scale = SEND.scaleWithWaves ? g.waveHpBp : 10000
-      const robots = ready.map(q => ({ kind: q.kind, hp: Math.floor(robotHp(q.kind, L.factories[q.kind] || 1) * scale / 10000), owner: L.p }))
+      const robots = ready.map(q => ({ kind: q.kind, hp: Math.floor(robotHp(q.kind, L.factories[q.kind] || 1) * g.sendHpBp / 10000), owner: L.p }))
       for (const q of ready) L.income += ROBOTS[q.kind].income
       L.stats.sent += ready.length
       target.incoming.push({ at: g.tick + SEND.previewS * TICK_HZ, robots })
@@ -386,15 +387,16 @@ const dist2 = (ax: number, ay: number, bx: number, by: number) => (ax - bx) ** 2
 const inRange = (t: Tower, r: Robot, rangeMc: number) => dist2(r.x, r.y, center(t.x), center(t.y)) <= rangeMc ** 2
 
 // Robot auras (repair, shield) and EMP auras (slow, overload, stun pulse). Before movement and firing.
-function applyStatus(L: Lane) {
+function applyStatus(g: Game, L: Lane) {
+  const auraBp = Math.floor(g.sendHpBp * SEND.hpPct / 100) // auras grow with robot HP so they stay relevant
   for (const r of L.robots) { r.slow = 0; r.amp = 100; if (r.stun > 0) r.stun-- }
   for (const a of L.robots) {
     if (a.kind !== 'repair' && a.kind !== 'shield') continue
     for (const r of L.robots) {
       if (r.hp <= 0) continue
-      if (a.kind === 'repair' && dist2(a.x, a.y, r.x, r.y) <= AURA.repairMc ** 2) r.hp = Math.min(r.maxHp, r.hp + AURA.repairHps * MC / TICK_HZ)
+      if (a.kind === 'repair' && dist2(a.x, a.y, r.x, r.y) <= AURA.repairMc ** 2) r.hp = Math.min(r.maxHp, r.hp + Math.floor(AURA.repairHps * MC * auraBp / 10000 / TICK_HZ))
       // default for an open question: each robot gets one shield, shields don't stack, Repair doesn't heal them
-      if (a.kind === 'shield' && r !== a && !r.gotShield && dist2(a.x, a.y, r.x, r.y) <= AURA.shieldMc ** 2) { r.shield = AURA.shieldHp * MC; r.gotShield = true }
+      if (a.kind === 'shield' && r !== a && !r.gotShield && dist2(a.x, a.y, r.x, r.y) <= AURA.shieldMc ** 2) { r.shield = Math.floor(AURA.shieldHp * MC * auraBp / 10000); r.gotShield = true }
     }
   }
   for (const t of L.towers) {

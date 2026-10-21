@@ -53,7 +53,8 @@ export const TOWERS = {
     branches: [{ key: 'pierce', name: 'Armor-piercing', desc: 'Ignores armor type' }, { key: 'overdrive', name: 'Overdrive', desc: '+80% fire rate' }],
   },
   flak: {
-    name: 'Flak', cost: 40, hp: 220, rangeMc: 4000, dps: 25, dmg: 'explosive', ground: false, air: true, attack: 'splash', period: 10, splashMc: 750,
+    name: 'Flak', cost: 40, hp: 220, rangeMc: 4000, dps: 50, // balance: GDD 25, but Explosive does 0.5x to Drones (Light), the only air robot
+    dmg: 'explosive', ground: false, air: true, attack: 'splash', period: 10, splashMc: 750,
     branches: [{ key: 'longRange', name: 'Long range', desc: '+50% range' }, { key: 'shrapnel', name: 'Shrapnel', desc: 'Wider splash' }],
   },
   emp: {
@@ -96,19 +97,20 @@ export interface RobotDef {
   sendCost: number; income: number; buildS: number; maxWave: number; factoryCost: number
   towerDps: number // open design gap 1: placeholder damage vs towers (Breach multiplies by 3)
 }
+// balance vs GDD: Scout 60→40 HP, Drone 120→90, Tank 400→480, Breaker 300→360 (speed decides exposure in a maze)
 export const ROBOTS: Record<RobotKind, RobotDef> = {
-  scout: { name: 'Scout', armor: 'light', air: false, hp: 60, speedMcPerS: 2000, sendCost: 10, income: 1, buildS: 1, maxWave: 12, factoryCost: 0, towerDps: 10 },
-  drone: { name: 'Drone', armor: 'light', air: true, hp: 120, speedMcPerS: 1400, sendCost: 25, income: 2, buildS: 3, maxWave: 6, factoryCost: 120, towerDps: 0 },
+  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, income: 1, buildS: 1, maxWave: 12, factoryCost: 0, towerDps: 10 },
+  drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, income: 2, buildS: 3, maxWave: 6, factoryCost: 120, towerDps: 0 },
   repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, income: 3, buildS: 4, maxWave: 3, factoryCost: 150, towerDps: 10 },
   shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, income: 3, buildS: 4, maxWave: 3, factoryCost: 150, towerDps: 10 },
-  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 400, speedMcPerS: 800, sendCost: 40, income: 4, buildS: 5, maxWave: 4, factoryCost: 150, towerDps: 10 },
+  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 480, speedMcPerS: 800, sendCost: 40, income: 4, buildS: 5, maxWave: 4, factoryCost: 150, towerDps: 10 },
   splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, income: 4, buildS: 5, maxWave: 3, factoryCost: 180, towerDps: 10 },
-  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 300, speedMcPerS: 900, sendCost: 50, income: 5, buildS: 6, maxWave: 3, factoryCost: 200, towerDps: 20 },
+  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 360, speedMcPerS: 900, sendCost: 50, income: 5, buildS: 6, maxWave: 3, factoryCost: 200, towerDps: 20 },
   colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, income: 30, buildS: 30, maxWave: 1, factoryCost: 400, towerDps: 40 },
 }
 export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 
-export const AURA = { repairMc: 2000, repairHps: 10, shieldMc: 2000, shieldHp: 50 }
+export const AURA = { repairMc: 2000, repairHps: 6, shieldMc: 2000, shieldHp: 30 } // scaled like sent robots' HP
 
 // Factories and sending. Values marked "default" are not in the GDD yet.
 export const FACTORY = {
@@ -121,7 +123,7 @@ export const FACTORY = {
 export const SEND = {
   prepS: 20,
   hpPct: 150, // balance: sent robots get 1.5x the GDD HP (neutrals use the base table)
-  scaleWithWaves: true, // balance: sent robots also get the neutral waves' HP growth, so sends stay relevant late
+  hpGrowthPctPerMin: 35, // balance: sent robots gain HP over the match (compounding per minute), so sends stay relevant late
   previewS: 4,
   gapTicks: 10, // 0.5 s between robots of a released wave
   bountyPct: 25, // to the defender, also for neutral kills (default for gap 2)

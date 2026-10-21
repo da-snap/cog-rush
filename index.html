@@ -3,22 +3,55 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-  <meta name="theme-color" content="#11151c" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
   <title>CogRush</title>
   <style>
-    * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: #11151c; color: #e6edf3; font: 14px/1.3 system-ui, sans-serif; overscroll-behavior: none; touch-action: none; user-select: none; }
-    #app { display: flex; flex-direction: column; height: 100dvh; max-width: 520px; margin: 0 auto; padding: env(safe-area-inset-top) 8px env(safe-area-inset-bottom); }
-    #hud { white-space: nowrap; font-size: 13px; display: flex; gap: 12px; justify-content: space-between; align-items: center; padding: 8px 4px; font-variant-numeric: tabular-nums; }
-    #hud b { font-size: 16px; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; height: 100%; background: #0d1117; color: #e6edf3; font: 14px/1.3 system-ui, -apple-system, sans-serif; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; }
+    #app { display: flex; flex-direction: column; height: 100dvh; max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 6px env(safe-area-inset-bottom); }
+    #hud { display: flex; gap: 10px; align-items: center; padding: 6px 2px; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: 13px; }
+    #hud b { font-size: 15px; }
+    #hud .grow { flex: 1; }
+    #hud .opp { color: #ff7b72; }
     #lane { flex: 1; min-height: 0; position: relative; }
-    #bar { min-height: 64px; display: flex; gap: 8px; align-items: center; padding: 8px 0; }
-    #msg { flex: 1; color: #9aa7b4; }
-    #msg.warn { color: #ff6b6b; font-weight: 600; }
-    button { min-height: 48px; min-width: 48px; padding: 0 16px; border: 0; border-radius: 10px; background: #2f81f7; color: #fff; font: 600 15px system-ui, sans-serif; }
-    button.danger { background: #d1242f; }
-    button.ghost { background: #2a313c; min-height: 36px; padding: 0 10px; font-size: 13px; }
-    button:disabled { opacity: .4; }
+    #banner { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); background: #da3633e6; color: #fff; padding: 6px 12px; border-radius: 8px; font-weight: 600; pointer-events: none; white-space: nowrap; z-index: 2; }
+    #toast { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: #30363de6; padding: 6px 12px; border-radius: 8px; pointer-events: none; white-space: nowrap; z-index: 2; }
+    #panel { padding: 4px 0 6px; }
+    #tabs { display: flex; gap: 4px; margin-bottom: 6px; }
+    #tabs button { flex: 1; min-height: 40px; background: #21262d; color: #9aa5b1; }
+    #tabs button.on { background: #30363d; color: #fff; box-shadow: inset 0 -2px 0 #2f81f7; }
+    #body { height: 176px; overflow: hidden; }
+    .info { color: #9aa5b1; min-height: 18px; margin: 0 2px 5px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .warn { color: #ff6b6b; font-weight: 600; }
+    .grid { display: grid; gap: 5px; grid-template-columns: repeat(3, 1fr); }
+    .grid.four { grid-template-columns: repeat(4, 1fr); }
+    .row { display: flex; gap: 6px; }
+    .row > * { flex: 1; }
+    button { min-height: 44px; min-width: 44px; padding: 4px 8px; border: 0; border-radius: 10px; background: #2f81f7; color: #fff; font: 600 14px system-ui, sans-serif; cursor: pointer; touch-action: manipulation; }
+    button small { display: block; font-weight: 400; font-size: 11px; opacity: .85; }
+    button.alt { background: #30363d; }
+    button.danger { background: #da3633; }
+    button.go { background: #238636; }
+    button:disabled { opacity: .35; cursor: default; }
+    button.ghost { background: #21262d; min-height: 32px; padding: 0 10px; font-size: 13px; }
+    .tile { background: #21262d; border: 1px solid #30363d; text-align: left; font-size: 13px; padding: 3px 6px; white-space: nowrap; overflow: hidden; }
+    .tile.sel { background: #30363d; border-color: #8b949e; }
+    .tile .ic { float: right; font-size: 16px; }
+    .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0d1117f2; z-index: 10; padding: 24px; }
+    .card { max-width: 360px; width: 100%; text-align: center; }
+    .card h1 { font-size: 44px; margin: 0 0 4px; letter-spacing: 1px; }
+    .card h1 span { color: #2f81f7; }
+    .card p { color: #9aa5b1; }
+    .card button { width: 100%; margin: 6px 0; min-height: 52px; font-size: 16px; }
+    .card table { width: 100%; margin: 12px 0; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    .card td { padding: 4px; border-bottom: 1px solid #21262d; }
+    .card td:not(:first-child) { text-align: right; }
+    .help { text-align: left; font-size: 13px; color: #9aa5b1; }
+    .help b { color: #e6edf3; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -27,16 +60,50 @@
     <div id="hud">
       <span>❤ <b id="lives"></b></span>
       <span>⚙ <b id="gold"></b> <small id="income"></small></span>
-      <span id="wave"></span>
+      <span class="grow"></span>
       <span id="clock"></span>
-      <button id="restart" class="ghost">Restart</button>
+      <span class="opp">Bot ❤ <b id="olives"></b></span>
+      <button id="pause" class="ghost" aria-label="Pause">II</button>
     </div>
-    <div id="lane"></div>
-    <div id="bar">
-      <span id="msg">Tap a cell to build.</span>
-      <button id="act" hidden></button>
+    <div id="lane"><div id="banner" hidden></div><div id="toast" hidden></div></div>
+    <div id="panel">
+      <div id="tabs">
+        <button data-tab="build" class="on">Build</button>
+        <button data-tab="send">Send</button>
+        <button data-tab="factories">Factories</button>
+      </div>
+      <div id="body"></div>
     </div>
   </div>
+
+  <div id="menu" class="screen">
+    <div class="card">
+      <h1>Cog<span>Rush</span></h1>
+      <p>Maze your lane. Send robots into theirs.<br />Last one with lives wins.</p>
+      <button data-diff="easy" class="alt">Easy bot</button>
+      <button data-diff="normal">Normal bot</button>
+      <button data-diff="hard" class="danger">Hard bot</button>
+      <details class="help">
+        <summary>How to play</summary>
+        <p><b>Build:</b> tap a cell, pick a tower. Every tower is also a wall: robots take the shortest open path, so make it long. Drag across cells for a quick Gatling wall.</p>
+        <p><b>Don't seal the lane:</b> if no path is left, robots go berserk and blast through (Breach mode), your income freezes and leaks cost double.</p>
+        <p><b>Send:</b> load robots, then Release. Every robot you send raises your income for the rest of the match. The bot sees your wave 4 s before it lands, and you see theirs.</p>
+        <p><b>Counter:</b> Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded. Factories unlock robots; you only get 4 slots.</p>
+        <p><b>Keys:</b> 1–6 towers, Q–I load robots, Space release, U upgrade, S sell, Esc cancel.</p>
+      </details>
+    </div>
+  </div>
+
+  <div id="end" class="screen" hidden>
+    <div class="card">
+      <h1 id="endTitle"></h1>
+      <p id="endSub"></p>
+      <table id="endStats"></table>
+      <button id="again" class="go">Rematch</button>
+      <button id="toMenu" class="alt">Menu</button>
+    </div>
+  </div>
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

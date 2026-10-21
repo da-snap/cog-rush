@@ -23,22 +23,20 @@ export const DIFFICULTY: Record<'easy' | 'normal' | 'hard', Strategy> = {
   hard: { name: 'Hard', delay: 10, defense: -1, factories: ['drone', 'tank', 'splitter', 'breaker'], burst: 8, counter: true, mazeTowers: 12 },
 }
 
-export interface BotMem { seen: Set<number>; armor: Record<Armor, number>; air: number; leaksAt: number[]; lastRelease: number }
-export const newMem = (): BotMem => ({ seen: new Set(), armor: { light: 0, heavy: 0, shielded: 0 }, air: 0, leaksAt: [], lastRelease: 0 })
-
-const COUNTER: Record<Armor, TowerKind> = { light: 'gatling', heavy: 'mortar', shielded: 'tesla' }
+export interface BotMem { seen: Map<number, RobotKind>; armor: Record<Armor, number>; air: number; leaksAt: number[]; leaks: { at: number; kind: RobotKind }[]; lastRelease: number }
+export const newMem = (): BotMem => ({ seen: new Map(), armor: { light: 0, heavy: 0, shielded: 0 }, air: 0, leaksAt: [], leaks: [], lastRelease: 0 })
 
 export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
   const L = g.lanes[p], O = g.lanes[opponent(g, p)]
-  // memory: what has been sent at us (counted once per robot)
+  // memory: what has come at us, sent or neutral (counted once per robot)
   for (const r of L.robots) {
-    if (r.owner < 0 || mem.seen.has(r.id)) continue
-    mem.seen.add(r.id)
+    if (mem.seen.has(r.id)) continue
+    mem.seen.set(r.id, r.kind)
     const w = ROBOTS[r.kind].sendCost
     if (ROBOTS[r.kind].air) mem.air += w
     else mem.armor[ROBOTS[r.kind].armor] += w
   }
-  for (const e of g.events) if (e.t === 'leak' && e.p === p) mem.leaksAt.push(g.tick)
+  for (const e of g.events) if (e.t === 'leak' && e.p === p) { mem.leaksAt.push(g.tick); mem.leaks.push({ at: g.tick, kind: mem.seen.get(e.robot) ?? 'scout' }) }
   if (g.tick % st.delay !== p % st.delay || L.lives <= 0) return []
 
   const cmds: Cmd[] = []
@@ -55,43 +53,86 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
     mem.lastRelease = g.tick
   }
 
-  const c = wantDefense ? defend(L, st, mem, t) : null
-  if (c) cmds.push({ p, ...c } as Cmd)
-  else cmds.push(...send(g, L, O, st).map(c => ({ p, ...c }) as Cmd))
+  const c = wantDefense ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null
+  const s = c ? [] : send(g, L, O, st)
+  const d = c ?? (!s.length && L.gold > 300 ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null) // nothing to send: don't sit on gold
+  if (d) cmds.push({ p, ...d } as Cmd)
+  cmds.push(...s.map(x => ({ p, ...x }) as Cmd))
   return cmds
 }
 
 type C = Cmd extends infer T ? T extends Cmd ? Omit<T, 'p'> : never : never
 
-function defend(L: Lane, st: Strategy, mem: BotMem, t: number): C | null {
+type Threat = 'light' | 'heavy' | 'shielded' | 'air'
+const COUNTER: Record<Threat, TowerKind> = { light: 'gatling', heavy: 'mortar', shielded: 'tesla', air: 'flak' }
+
+// What is coming at us: robots seen so far plus the opponent's factories (full visibility).
+function threats(O: Lane, mem: BotMem): Record<Threat, number> {
+  const w: Record<Threat, number> = { light: mem.armor.light + 50, heavy: mem.armor.heavy, shielded: mem.armor.shielded, air: mem.air }
+  for (const k of ROBOT_KINDS) {
+    if (k === 'scout' || !O.factories[k]) continue
+    w[ROBOTS[k].air ? 'air' : ROBOTS[k].armor] += 150 * O.factories[k]
+  }
+  return w
+}
+
+// Our damage against each threat: dps times how many cells of that threat's route each tower reaches.
+const AIR_PATH = new Set(Array.from({ length: ROWS }, (_, y) => y * COLS + (COLS - 1) / 2)) // Drones fly straight down
+function coverageByThreat(towers: Tower[], ground: Set<number>): Record<Threat, number> {
+  const c: Record<Threat, number> = { light: 1, heavy: 1, shielded: 1, air: 1 }
+  for (const x of towers) {
+    const d = TOWERS[x.kind], st = towerStats(x)
+    if (d.ground) {
+      const n = coverage(x.x, x.y, st.rangeMc, ground)
+      for (const a of ['light', 'heavy', 'shielded'] as const) c[a] += st.dps * n * ARMOR_MULT_PCT[d.dmg][a] / 100
+    }
+    if (d.air) c.air += st.dps * coverage(x.x, x.y, st.rangeMc, AIR_PATH) * ARMOR_MULT_PCT[d.dmg].light / 100
+  }
+  return c
+}
+
+function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: number, hpScale: number): C | null {
   const towers = L.towers.filter((x): x is Tower => !!x)
   const cur = pathLen(L.towers)
-  const path = pathFrom(L.openDist, L.towers)
-  const pathSet = new Set(path)
+  const pathSet = new Set(pathFrom(L.openDist, L.towers))
 
-  // which tower to add next
+  // which threat is least covered relative to how big it is
+  // what leaked lately decides; otherwise match our damage mix to the threat mix
+  const leaked: Record<Threat, number> = { light: 0, heavy: 0, shielded: 0, air: 0 }
+  for (const l of mem.leaks) if (l.at > tick - 45 * TICK_HZ) leaked[ROBOTS[l.kind].air ? 'air' : ROBOTS[l.kind].armor]++
+  // how well each threat is covered: damage one robot takes crossing our lane vs. the HP of a small wave of it
+  const th = threats(O, mem), cov = coverageByThreat(towers, pathSet)
+  const scale = hpScale * SEND.hpPct / 100
+  const TYPICAL: Record<Threat, { hp: number; speed: number }> = { light: { hp: 70, speed: 2 }, heavy: { hp: 400, speed: 0.8 }, shielded: { hp: 220, speed: 1 }, air: { hp: 120, speed: 1.4 } }
+  const ratio = (x: Threat) => th[x] < 100 ? INF : cov[x] / TYPICAL[x].speed / (TYPICAL[x].hp * 1000 * scale * 4)
+  const need = (['light', 'heavy', 'shielded', 'air'] as Threat[]).sort((a, b) => (ratio(a) - leaked[a] * 1e6) - (ratio(b) - leaked[b] * 1e6))[0]
+
   let kind: TowerKind = 'gatling'
   const walls = towers.filter(x => x.kind === 'gatling').length
   if (walls >= st.mazeTowers) {
     if (st.counter) {
-      const air = mem.air, top = (Object.entries(mem.armor) as [Armor, number][]).sort((a, b) => b[1] - a[1])[0]
-      const airDps = towers.filter(x => TOWERS[x.kind].air).reduce((a, x) => a + towerStats(x).dps, 0)
-      kind = air > 0 && airDps < air * 2_000 ? 'flak' : top[1] > 0 ? COUNTER[top[0]] : 'gatling'
-      if (towers.length > 16 && !towers.some(x => x.kind === 'emp')) kind = 'emp'
-      if (t > 360 && towers.filter(x => x.kind === 'laser').length < 2) kind = 'laser'
+      kind = COUNTER[need]
+      if (need === 'light' && t > 300 && towers.filter(x => x.kind === 'laser').length < 2) kind = 'laser'
+      if (need === 'shielded' && towers.filter(x => x.kind === 'tesla').length > 3) kind = 'laser'
+      if (towers.length > 18 && !towers.some(x => x.kind === 'emp')) kind = 'emp'
     } else {
       kind = (['gatling', 'mortar', 'tesla'] as TowerKind[])[towers.length % 3]
     }
   }
 
-  // upgrade the best-placed damage tower once the maze is long enough and the lane is full-ish
+  // upgrade the best-placed tower that fights what's coming, once the maze has some length
   if (towers.length >= st.mazeTowers + 4) {
+    const fits = (x: Tower) => {
+      const d = TOWERS[x.kind]
+      if (need === 'air') return d.air ? 100 : 0
+      return d.ground ? ARMOR_MULT_PCT[d.dmg][need] : 0
+    }
     const best = towers
       .filter(x => x.level < 3 && (x.kind !== 'gatling' || towers.length > 20))
-      .map(x => ({ x, cover: coverage(x.x, x.y, towerStats(x).rangeMc, pathSet) }))
-      .sort((a, b) => b.cover - a.cover || a.x.id - b.x.id)[0]
-    if (best && best.cover > 3) {
-      const branch = pickBranch(best.x.kind, mem)
+      .map(x => ({ x, score: coverage(x.x, x.y, towerStats(x).rangeMc, need === 'air' ? AIR_PATH : pathSet) * fits(x) }))
+      .sort((a, b) => b.score - a.score || a.x.id - b.x.id)[0]
+    if (best && best.score > 300) {
+      const branch = pickBranch(best.x.kind, need)
       if (!canUpgrade(L, best.x.x, best.x.y, branch)) return { t: 'upgrade', x: best.x.x, y: best.x.y, branch }
       if (L.gold < upgradeCost(best.x) && towers.length >= st.mazeTowers + 8) return null // save up for it
     }
@@ -99,6 +140,7 @@ function defend(L: Lane, st: Strategy, mem: BotMem, t: number): C | null {
 
   // place: prefer cells that lengthen the path, then cells that cover lots of path
   const range = TOWERS[kind].rangeMc
+  const route = kind === 'flak' ? AIR_PATH : pathSet
   let bestCell = -1, bestScore = -INF
   for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
     if (!buildable(x, y) || canBuild(L, x, y, kind)) continue
@@ -108,7 +150,7 @@ function defend(L: Lane, st: Strategy, mem: BotMem, t: number): C | null {
     L.towers[i] = null
     if (len >= INF) continue // never seal
     const gain = len - cur
-    const score = kind === 'gatling' ? gain * 100 + coverage(x, y, range, pathSet) - (pathSet.has(i) ? 0 : 5) : coverage(x, y, range, pathSet) * 10 + gain * 20
+    const score = kind === 'gatling' ? gain * 100 + coverage(x, y, range, pathSet) - (pathSet.has(i) ? 0 : 5) : coverage(x, y, range, route) * 10 + gain * 20
     if (score > bestScore) { bestScore = score; bestCell = i }
   }
   if (bestCell < 0) return null
@@ -124,16 +166,14 @@ const coverage = (x: number, y: number, rangeMc: number, path: Set<number>) => {
   return n
 }
 
-function pickBranch(kind: TowerKind, mem: BotMem): string {
-  const top = (Object.entries(mem.armor) as [Armor, number][]).sort((a, b) => b[1] - a[1])[0][0]
-  const b = TOWERS[kind].branches
+function pickBranch(kind: TowerKind, need: Threat): string {
   switch (kind) {
-    case 'gatling': return top === 'light' ? 'overdrive' : 'pierce'
-    case 'mortar': return top === 'heavy' ? 'burn' : 'cluster'
-    case 'tesla': return top === 'light' ? 'chain5' : 'arcFocus'
-    case 'laser': return top === 'heavy' ? 'melt' : 'wide'
+    case 'gatling': return need === 'light' || need === 'air' ? 'overdrive' : 'pierce'
+    case 'flak': return 'shrapnel'
+    case 'mortar': return need === 'heavy' ? 'burn' : 'cluster'
+    case 'tesla': return need === 'light' ? 'chain5' : 'arcFocus'
+    case 'laser': return need === 'heavy' ? 'melt' : 'wide'
     case 'emp': return 'overload'
-    default: return b[1].key
   }
 }
 
