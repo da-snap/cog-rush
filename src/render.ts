@@ -31,7 +31,7 @@ export interface View { x: number; y: number; cell: number }
 
 export function drawLane(g: Graphics, L: Lane, v: View, o: {
   alpha: number; prev: Map<number, { x: number; y: number }>; fx: Fx[]; now: number
-  sel?: { x: number; y: number } | null; preview?: TowerKind | null; drag?: number[]; mini?: boolean
+  sel?: { x: number; y: number } | null; preview?: TowerKind | null; drag?: number[]; dragKind?: TowerKind; mini?: boolean
 }) {
   const { cell } = v
   const X = (c: number) => v.x + c * cell, Y = (c: number) => v.y + c * cell
@@ -57,7 +57,7 @@ export function drawLane(g: Graphics, L: Lane, v: View, o: {
   }
   if (o.drag?.length) {
     towers = towers === L.towers ? L.towers.slice() : towers
-    for (const i of o.drag) towers[i] = { kind: 'gatling', hp: TOWERS.gatling.hp * MC } as Tower
+    for (const i of o.drag) towers[i] = { kind: o.dragKind ?? 'gatling', hp: TOWERS.gatling.hp * MC } as Tower
   }
   const preview = towers !== L.towers
   const open = preview ? field(towers, false) : L.openDist
@@ -84,7 +84,7 @@ export function drawLane(g: Graphics, L: Lane, v: View, o: {
     }
     if (t.hp < t.maxHp) g.rect(x + 2, y + cell - 4, (cell - 4) * Math.max(0, t.hp) / t.maxHp, 3).fill(0xf85149)
   }
-  for (const i of o.drag ?? []) g.roundRect(X(i % COLS) + 2, Y(Math.floor(i / COLS)) + 2, cell - 4, cell - 4, 4).fill({ color: 0x9aa5b1, alpha: 0.5 })
+  for (const i of o.drag ?? []) g.roundRect(X(i % COLS) + 2, Y(Math.floor(i / COLS)) + 2, cell - 4, cell - 4, 4).fill({ color: VIS.tower[o.dragKind ?? 'gatling'].color, alpha: 0.45 })
 
   // selection + range
   if (s && !o.mini) {

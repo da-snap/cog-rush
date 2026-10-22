@@ -54,6 +54,7 @@ let view = ME // which lane is shown big on a phone
 let prev = new Map<number, { x: number; y: number }>()
 let fx: Fx[] = []
 let drag: { cells: number[]; last: number } | null = null
+let rowKind: TowerKind = 'gatling' // what a drag builds
 let toastUntil = 0
 
 // --- match flow --------------------------------------------------------------
@@ -62,7 +63,7 @@ function start(d: keyof typeof DIFFICULTY) {
   diff = d
   g = newGame()
   bot = { st: DIFFICULTY[d], mem: newMem() }
-  pending = []; sel = null; view = ME; paused = false; fx = []; prev.clear(); tab = 'build'
+  pending = []; sel = null; view = ME; paused = false; lastLives = [20, 20]; fx = []; prev.clear(); tab = 'build'
   $('menu').hidden = true
   $('end').hidden = true
   $('pause').textContent = 'II'
@@ -96,6 +97,17 @@ function togglePause() {
   toast(paused ? 'Paused' : 'Resumed', paused ? 1e9 : 800)
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && g && !paused && g.winner === -1) togglePause() })
+
+// help overlay pauses the match while it's open
+let pausedByHelp = false
+function toggleHelp() {
+  const el = $('helpScreen'), open = el.hidden
+  el.hidden = !open
+  if (open && g && !paused && g.winner === -1) { togglePause(); pausedByHelp = true }
+  else if (!open && pausedByHelp) { pausedByHelp = false; if (paused) togglePause() }
+}
+$('help').onclick = toggleHelp
+$('helpClose').onclick = toggleHelp
 
 function toast(text: string, ms = 1800) {
   toastEl.textContent = text
@@ -163,20 +175,20 @@ app.canvas.addEventListener('pointerup', () => {
   const cells = drag.cells
   drag = null
   if (cells.length === 1) return tap({ x: cells[0] % COLS, y: Math.floor(cells[0] / COLS) })
-  // quick wall: Gatlings along the drag, skipping any cell that would seal the lane
-  const L = g.lanes[ME], towers = L.towers.slice()
+  // quick row: the picked tower type along the drag, skipping any cell that would seal the lane
+  const L = g.lanes[ME], towers = L.towers.slice(), cost = TOWERS[rowKind].cost
   let gold = L.gold, built = 0, skipped = 0
   for (const i of cells) {
     const x = i % COLS, y = Math.floor(i / COLS)
-    if (gold < TOWERS.gatling.cost) break
-    if (canBuild(L, x, y, 'gatling') || wouldSeal(L, x, y, towers)) { skipped++; continue }
-    towers[i] = { kind: 'gatling' } as Tower
-    gold -= TOWERS.gatling.cost
-    pending.push({ p: ME, t: 'build', x, y, kind: 'gatling' })
+    if (gold < cost) break
+    if (canBuild(L, x, y, rowKind) || wouldSeal(L, x, y, towers)) { skipped++; continue }
+    towers[i] = { kind: rowKind } as Tower
+    gold -= cost
+    pending.push({ p: ME, t: 'build', x, y, kind: rowKind })
     built++
   }
   sel = null
-  toast(`Wall: ${built} Gatling${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${gold < TOWERS.gatling.cost && built < cells.length - skipped ? ', out of gold' : ''}`)
+  toast(`Row: ${built} ${TOWERS[rowKind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${gold < cost && built < cells.length - skipped ? ', out of gold' : ''}`)
   renderPanel(true)
 })
 
@@ -207,6 +219,7 @@ function act(a: string, arg?: string) {
     case 'load': pending.push({ p: ME, t: 'load', kind: arg as RobotKind }); break
     case 'release': pending.push({ p: ME, t: 'release' }); break
     case 'pickFactory': selFactory = arg as RobotKind; break
+    case 'rowKind': rowKind = arg as TowerKind; break
     case 'factory': pending.push({ p: ME, t: 'factory', kind: selFactory }); break
     case 'demolish': pending.push({ p: ME, t: 'demolish', kind: selFactory }); break
   }
@@ -221,14 +234,16 @@ function renderPanel(force = false) {
   if (html !== lastHtml || force) { body.innerHTML = html; lastHtml = html }
 }
 
-const btn = (act: string, label: string, opts: { arg?: string; sub?: string; cls?: string; off?: boolean | string | null; icon?: string; color?: string } = {}) =>
+const btn = (act: string, label: string, opts: { arg?: string; sub?: string; cls?: string; off?: boolean | string | null; icon?: string; color?: string; key?: string } = {}) =>
   `<button data-act="${act}" ${opts.arg ? `data-arg="${opts.arg}"` : ''} class="${opts.cls ?? ''}" ${opts.off ? 'disabled' : ''}${opts.color ? ` style="border-left:3px solid ${opts.color}"` : ''}>` +
-  `${opts.icon ? `<span class="ic" style="color:${opts.color}">${opts.icon}</span>` : ''}${label}${opts.sub ? `<small>${opts.sub}</small>` : ''}</button>`
+  `${opts.icon ? `<span class="ic" style="color:${opts.color}">${opts.icon}</span>` : ''}${label}${opts.key ? `<kbd>${opts.key}</kbd>` : ''}${opts.sub ? `<small>${opts.sub}</small>` : ''}</button>`
 
 function buildHtml(g: Game, L: Lane): string {
   if (!sel) {
-    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>' : 'Tap a cell to build. Drag across cells for a Gatling wall.'
-    return `<div class="info">${msg}</div>` + legend()
+    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>' : `Tap a cell to build · drag for a row of <b style="color:${hex(VIS.tower[rowKind].color)}">${TOWERS[rowKind].name}</b>`
+    return `<div class="info">${msg}</div><div class="grid six">` +
+      TOWER_KINDS.map((k, i) => `<button data-act="rowKind" data-arg="${k}" class="pick ${k === rowKind ? 'sel' : ''}"><span class="ic" style="color:${hex(VIS.tower[k].color)}">${VIS.tower[k].icon}</span>${TOWERS[k].name}<br>${TOWERS[k].cost}g<kbd>${i + 1}</kbd></button>`).join('') +
+      '</div>' + legend()
   }
   const t = L.towers[sel.y * COLS + sel.x]
   if (!t) {
@@ -236,16 +251,16 @@ function buildHtml(g: Game, L: Lane): string {
     if (why && why !== 'Not enough gold') return `<div class="info warn">${why}</div>`
     const seals = wouldSeal(L, sel.x, sel.y)
     return `<div class="info ${seals ? 'warn' : ''}">${seals ? '⚠ This seals your lane! Robots will breach it.' : 'Pick a tower for this cell.'}</div><div class="grid">` +
-      TOWER_KINDS.map(k => btn('build', TOWERS[k].name, { arg: k, sub: `${TOWERS[k].cost} · ${DMG_SHORT[TOWERS[k].dmg]}`, cls: seals ? 'tile danger' : 'tile', off: L.gold < TOWERS[k].cost, icon: VIS.tower[k].icon, color: hex(VIS.tower[k].color) })).join('') + '</div>'
+      TOWER_KINDS.map((k, i) => btn('build', TOWERS[k].name, { arg: k, key: String(i + 1), sub: `${TOWERS[k].cost} · ${DMG_SHORT[TOWERS[k].dmg]}`, cls: seals ? 'tile danger' : 'tile', off: L.gold < TOWERS[k].cost, icon: VIS.tower[k].icon, color: hex(VIS.tower[k].color) })).join('') + '</div>'
   }
   const st = towerStats(t), d = TOWERS[t.kind]
   const branch = t.branch ? d.branches.find(b => b.key === t.branch)!.name : ''
   const info = `<b style="color:${hex(VIS.tower[t.kind].color)}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${Math.round(t.maxHp / 1000)} · ${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`
   let up: string
-  if (t.level === 1) up = btn('upgrade', `Upgrade ${upgradeCost(t)}`, { sub: '+60% dmg, +10% range', off: !!canUpgrade(L, t.x, t.y) })
-  else if (t.level === 2) up = d.branches.map(b => btn('upgrade', `${b.name} ${upgradeCost(t)}`, { arg: b.key, sub: b.desc, off: !!canUpgrade(L, t.x, t.y, b.key) })).join('')
+  if (t.level === 1) up = btn('upgrade', `Upgrade ${upgradeCost(t)}`, { key: 'U', sub: '+60% dmg, +10% range', off: !!canUpgrade(L, t.x, t.y) })
+  else if (t.level === 2) up = d.branches.map((b, i) => btn('upgrade', `${b.name} ${upgradeCost(t)}`, { arg: b.key, key: 'AB'[i], sub: b.desc, off: !!canUpgrade(L, t.x, t.y, b.key) })).join('')
   else up = btn('noop', 'Max level', { cls: 'alt', off: true })
-  return `<div class="info">${info}</div><div class="info">${TOWER_ROLE[t.kind]}</div><div class="row">${up}${btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt' })}</div>`
+  return `<div class="info">${info}</div><div class="info">${TOWER_ROLE[t.kind]}</div><div class="row">${up}${btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt', key: 'S' })}</div>`
 }
 
 const legend = () => `<div class="info" style="font-size:12px">Kinetic beats <b>Light</b> · Explosive beats <b>Heavy</b> · Energy beats <b>Shielded</b></div>`
@@ -253,16 +268,18 @@ const legend = () => `<div class="info" style="font-size:12px">Kinetic beats <b>
 function sendHtml(g: Game, L: Lane): string {
   const ready = readyCount(L), building = L.queue.length - ready
   const prep = secs(g) < SEND.prepS
-  const info = prep ? `Sending unlocks in ${Math.ceil(SEND.prepS - secs(g))}s. You can already load robots.` : `${ready} ready${building ? ` · ${building} building` : ''} · each sent robot raises your income`
-  const tiles = ROBOT_KINDS.map(k => {
+  const cur = L.queue.find(q => q.left > 0)
+  const build = cur ? ` · building ${ROBOTS[cur.kind].name} ${Math.ceil(cur.left / TICK_HZ)}s${building > 1 ? ` (+${building - 1} queued)` : ''}` : ''
+  const info = (prep ? `Release unlocks in ${Math.ceil(SEND.prepS - secs(g))}s` : `<b>${ready}</b> ready to release`) + build
+  const tiles = ROBOT_KINDS.map((k, i) => {
     const lvl = L.factories[k], q = L.queue.filter(x => x.kind === k).length
     const why = canLoad(g, L, k)
     return btn('load', short(k), {
-      arg: k, cls: 'tile', off: !!why, icon: VIS.robot[k].icon, color: hex(VIS.robot[k].color),
+      arg: k, cls: 'tile', off: !!why, icon: VIS.robot[k].icon, color: hex(VIS.robot[k].color), key: 'QWERTYUI'[i],
       sub: lvl ? `${ROBOTS[k].sendCost}g · ${q}/${waveCap(k, lvl)}` : 'no factory',
     })
   }).join('')
-  return `<div class="info">${info}</div><div class="grid four">${tiles}</div><div class="row" style="margin-top:5px">${btn('release', `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L) })}</div>`
+  return `<div class="info">${info}</div><div class="grid four">${tiles}</div><div class="row" style="margin-top:5px">${btn('release', `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L), key: 'Space' })}</div>`
 }
 
 function factoryHtml(L: Lane): string {
@@ -293,26 +310,41 @@ addEventListener('keydown', e => {
   if (!g || e.repeat) return
   const L = g.lanes[ME], k = e.key.toLowerCase()
   const t = sel && L.towers[sel.y * COLS + sel.x]
-  if (k >= '1' && k <= '6' && sel && !t) act('build', TOWER_KINDS[+k - 1])
+  if (k === 'h' || k === '?') toggleHelp()
+  else if (k >= '1' && k <= '6' && sel && !t) act('build', TOWER_KINDS[+k - 1])
+  else if (k >= '1' && k <= '6' && !sel) act('rowKind', TOWER_KINDS[+k - 1])
   else if (k === 'u' && t) act('upgrade')
   else if ((k === 'a' || k === 'b') && t && t.level === 2) act('upgrade', TOWERS[t.kind].branches[k === 'a' ? 0 : 1].key)
   else if (k === 's' && t) act('sell')
   else if ('qwertyui'.includes(k) && k.length === 1) act('load', ROBOT_KINDS['qwertyui'.indexOf(k)])
   else if (k === ' ') { e.preventDefault(); act('release') }
-  else if (k === 'escape') { sel = null; renderPanel(true) }
+  else if (k === 'escape') { if (!$('helpScreen').hidden) toggleHelp(); else { sel = null; renderPanel(true) } }
   else if (k === 'p') togglePause()
 })
 
 // --- loop ----------------------------------------------------------------------
 
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
+let lastLives = [0, 0]
 function hud(g: Game) {
-  const L = g.lanes[ME], t = secs(g)
+  const L = g.lanes[ME], O = g.lanes[BOT], t = secs(g)
   $('lives').textContent = String(L.lives)
   $('gold').textContent = String(L.gold)
-  $('income').textContent = L.sealed ? 'frozen' : `+${L.income} in ${Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))}s`
+  $('income').textContent = `+${L.income}`
+  $('incomeSub').textContent = L.sealed ? 'frozen!' : `next in ${Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))}s`
+  $('income').classList.toggle('frozen', L.sealed)
+  $('tickFill').style.width = `${(t % INCOME_EVERY_S) / INCOME_EVERY_S * 100}%`
+  $('tickFill').style.background = L.sealed ? '#ff6b6b' : '#3fb950'
+  $('olives').textContent = String(O.lives)
+  $('ogold').textContent = String(O.gold)
+  $('oincome').textContent = `+${O.income}`
+  g.lanes.forEach((x, i) => {
+    const el = $(i === ME ? 'meLives' : 'botLives')
+    el.classList.toggle('low', x.lives <= 5)
+    if (x.lives < lastLives[i]) { el.classList.remove('hit'); void el.offsetWidth; el.classList.add('hit') }
+    lastLives[i] = x.lives
+  })
   $('clock').textContent = t < SEND.prepS ? `Prep ${Math.ceil(SEND.prepS - t)}` : t >= SUDDEN.fromS ? `⚠ ${clock(t)}` : clock(t)
-  $('olives').textContent = String(g.lanes[BOT].lives)
   const shown = g.lanes[mainLane()], inc = shown.incoming[0]
   if (inc) {
     const counts = new Map<RobotKind, number>()
@@ -364,7 +396,7 @@ app.ticker.add(t => {
       alpha, prev, now, mini: d.mini,
       fx: d.mini ? [] : fx.filter(f => f.p === d.L.p),
       sel: mine ? sel : null, preview: mine && sel && !d.L.towers[sel.y * COLS + sel.x] && tab === 'build' ? 'gatling' : null,
-      drag: mine && drag && drag.cells.length > 1 ? drag.cells : [],
+      drag: mine && drag && drag.cells.length > 1 ? drag.cells : [], dragKind: rowKind,
     })
   }
   if (mini) gfx.rect(mini.x - 1, mini.y - 1, mini.cell * COLS + 2, mini.cell * ROWS + 2).stroke({ width: 1, color: big === ME ? 0xff7b72 : 0x3fb950 })

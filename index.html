@@ -13,10 +13,29 @@
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; height: 100%; background: #0d1117; color: #e6edf3; font: 14px/1.3 system-ui, -apple-system, sans-serif; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; }
     #app { display: flex; flex-direction: column; height: 100dvh; max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 6px env(safe-area-inset-bottom); }
-    #hud { display: flex; gap: 10px; align-items: center; padding: 6px 2px; white-space: nowrap; font-variant-numeric: tabular-nums; font-size: 13px; }
-    #hud b { font-size: 15px; }
-    #hud .grow { flex: 1; }
-    #hud .opp { color: #ff7b72; }
+    #hud { display: flex; gap: 8px; align-items: center; padding: 4px 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .players { flex: 1; display: grid; gap: 2px; min-width: 0; }
+    .who { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+    .who .tag { width: 30px; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #58a6ff; }
+    .who.bot .tag { color: #ff7b72; }
+    .who.bot { opacity: .85; font-size: 12px; }
+    .stat b { font-size: 16px; margin-left: 2px; }
+    .who.bot .stat b { font-size: 13px; }
+    .stat small { color: #8b949e; margin-left: 3px; font-size: 11px; }
+    .stat.low b { color: #ff6b6b; }
+    .stat.hit { animation: hit .6s; }
+    @keyframes hit { 0%, 60% { color: #ff4d4f; transform: scale(1.15); } }
+    .frozen { color: #ff6b6b !important; }
+    .side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+    .side .btns { display: flex; gap: 4px; }
+    #clock { font-size: 15px; font-weight: 600; }
+    #tick { height: 3px; background: #21262d; border-radius: 2px; margin: 0 2px 4px; overflow: hidden; }
+    #tickFill { height: 100%; width: 0; background: #3fb950; }
+    kbd { display: inline-block; font: 600 10px ui-monospace, monospace; padding: 0 4px; margin-left: 4px; border: 1px solid #484f58; border-radius: 4px; color: #c9d1d9; background: #161b22; vertical-align: 1px; }
+    @media (hover: none) and (pointer: coarse) { button kbd { display: none; } }
+    .keys { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    .keys td { padding: 4px 2px; border-bottom: 1px solid #21262d; color: #c9d1d9; text-align: left !important; }
+    .keys td:first-child { white-space: nowrap; width: 1%; padding-right: 10px; }
     #lane { flex: 1; min-height: 0; position: relative; }
     #banner { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); background: #da3633e6; color: #fff; padding: 6px 12px; border-radius: 8px; font-weight: 600; pointer-events: none; white-space: nowrap; z-index: 2; }
     #toast { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: #30363de6; padding: 6px 12px; border-radius: 8px; pointer-events: none; white-space: nowrap; z-index: 2; }
@@ -40,6 +59,10 @@
     button.ghost { background: #21262d; min-height: 32px; padding: 0 10px; font-size: 13px; }
     .tile { background: #21262d; border: 1px solid #30363d; text-align: left; font-size: 13px; padding: 3px 6px; white-space: nowrap; overflow: hidden; }
     .tile.sel { background: #30363d; border-color: #8b949e; }
+    .grid.six { grid-template-columns: repeat(6, 1fr); }
+    .pick { min-height: 44px; padding: 2px; text-align: center; font-size: 11px; background: #21262d; border: 1px solid #30363d; }
+    .pick .ic { float: none; display: block; font-size: 16px; }
+    .pick.sel { background: #30363d; border: 2px solid #e6edf3; }
     .tile .ic { float: right; font-size: 16px; }
     .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0d1117f2; z-index: 10; padding: 24px; }
     .card { max-width: 360px; width: 100%; text-align: center; }
@@ -58,13 +81,24 @@
 <body>
   <div id="app">
     <div id="hud">
-      <span>❤ <b id="lives"></b></span>
-      <span>⚙ <b id="gold"></b> <small id="income"></small></span>
-      <span class="grow"></span>
-      <span id="clock"></span>
-      <span class="opp">Bot ❤ <b id="olives"></b></span>
-      <button id="pause" class="ghost" aria-label="Pause">II</button>
+      <div class="players">
+        <div class="who" id="meRow"><span class="tag">You</span>
+          <span class="stat" id="meLives" title="Lives: robots that reach your exit cost 1 (2 while sealed)">❤ <b id="lives"></b><small>lives</small></span>
+          <span class="stat" title="Gold to spend">⚙ <b id="gold"></b><small>gold</small></span>
+          <span class="stat" title="Income: paid every 10 s, +1 for every 10 gold of robots you send">▲ <b id="income"></b><small id="incomeSub">/10s</small></span>
+        </div>
+        <div class="who bot"><span class="tag">Bot</span>
+          <span class="stat" id="botLives">❤ <b id="olives"></b><small>lives</small></span>
+          <span class="stat">⚙ <b id="ogold"></b><small>gold</small></span>
+          <span class="stat">▲ <b id="oincome"></b><small>/10s</small></span>
+        </div>
+      </div>
+      <div class="side">
+        <span id="clock"></span>
+        <div class="btns"><button id="help" class="ghost" aria-label="Help">?</button><button id="pause" class="ghost" aria-label="Pause">II</button></div>
+      </div>
     </div>
+    <div id="tick" title="Next income payout"><div id="tickFill"></div></div>
     <div id="lane"><div id="banner" hidden></div><div id="toast" hidden></div></div>
     <div id="panel">
       <div id="tabs">
@@ -85,12 +119,37 @@
       <button data-diff="hard" class="danger">Hard bot</button>
       <details class="help">
         <summary>How to play</summary>
-        <p><b>Build:</b> tap a cell, pick a tower. Every tower is also a wall: robots take the shortest open path, so make it long. Drag across cells for a quick Gatling wall.</p>
+        <p><b>Build:</b> tap a cell, pick a tower. Every tower is also a wall: robots take the shortest open path, so make it long. Drag across cells to build a whole row.</p>
         <p><b>Don't seal the lane:</b> if no path is left, robots go berserk and blast through (Breach mode), your income freezes and leaks cost double.</p>
         <p><b>Send:</b> load robots, then Release. Every robot you send raises your income for the rest of the match. The bot sees your wave 4 s before it lands, and you see theirs.</p>
         <p><b>Counter:</b> Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded. Factories unlock robots; you only get 4 slots.</p>
-        <p><b>Keys:</b> 1–6 towers, Q–I load robots, Space release, U upgrade, S sell, Esc cancel.</p>
+        <p><b>Keys:</b> press <b>H</b> in a match for the full list.</p>
       </details>
+    </div>
+  </div>
+
+
+  <div id="helpScreen" class="screen" hidden>
+    <div class="card" style="max-width:420px">
+      <h2 style="margin:0 0 8px">How to play</h2>
+      <div class="help">
+        <p><b>Lives</b> ❤: every robot reaching your exit costs 1 (2 while your lane is sealed). 0 lives = you lose.</p>
+        <p><b>Income</b> ▲: paid every 10 s (green bar under the stats). Every 10 gold of robots you send adds +1 for the rest of the match. Income freezes while your lane is sealed.</p>
+        <p><b>Build</b>: tap a cell and pick a tower, or drag across cells to build a row of the tower picked in the Build tab. Robots take the shortest open path, so make it long.</p>
+        <p><b>Counter</b>: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.</p>
+      </div>
+      <table class="keys">
+        <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Build that tower on the selected cell (with no cell selected: pick the row type)</td></tr>
+        <tr><td><kbd>U</kbd></td><td>Upgrade the selected tower</td></tr>
+        <tr><td><kbd>A</kbd> / <kbd>B</kbd></td><td>Pick level 3 branch A or B</td></tr>
+        <tr><td><kbd>S</kbd></td><td>Sell the selected tower</td></tr>
+        <tr><td><kbd>Q</kbd>–<kbd>I</kbd></td><td>Load Scout, Drone, Repair, Shield, Tank, Splitter, Breaker, Colossus</td></tr>
+        <tr><td><kbd>Space</kbd></td><td>Release your wave</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Deselect</td></tr>
+        <tr><td><kbd>P</kbd></td><td>Pause</td></tr>
+        <tr><td><kbd>H</kbd> / <kbd>?</kbd></td><td>This help</td></tr>
+      </table>
+      <button id="helpClose" class="go" style="margin-top:12px">Back to the game</button>
     </div>
   </div>
 
