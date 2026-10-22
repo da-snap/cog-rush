@@ -3,7 +3,7 @@
 import { ARMOR_MULT_PCT, COLS, ROBOTS, ROBOT_KINDS, ROWS, SEND, TICK_HZ, TOWERS, type Armor, type RobotKind, type TowerKind } from './config.ts'
 import {
   INF, buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, opponent, pathFrom, pathLen,
-  readyCount, secs, towerStats, upgradeCost, type Cmd, type Game, type Lane, type Tower,
+  readyCount, secs, sellValue, towerStats, upgradeCost, type Cmd, type Game, type Lane, type Tower,
 } from './sim.ts'
 
 export interface Strategy {
@@ -56,7 +56,7 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
   const c = wantDefense ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null
   const s = c ? [] : send(g, L, O, st)
   const d = c ?? (!s.length && L.gold > 300 ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null) // nothing to send: don't sit on gold
-  if (d) cmds.push({ p, ...d } as Cmd)
+  for (const x of d ? [d].flat() : []) cmds.push({ p, ...x } as Cmd)
   cmds.push(...s.map(x => ({ p, ...x }) as Cmd))
   return cmds
 }
@@ -91,7 +91,7 @@ function coverageByThreat(towers: Tower[], ground: Set<number>): Record<Threat, 
   return c
 }
 
-function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: number, hpScale: number): C | null {
+function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: number, hpScale: number): C | C[] | null {
   const towers = L.towers.filter((x): x is Tower => !!x)
   const cur = pathLen(L.towers)
   const pathSet = new Set(pathFrom(L.openDist, L.towers))
@@ -121,12 +121,12 @@ function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: nu
   }
 
   // upgrade the best-placed tower that fights what's coming, once the maze has some length
+  const fits = (x: Tower) => {
+    const d = TOWERS[x.kind]
+    if (need === 'air') return d.air ? 100 : 0
+    return d.ground ? ARMOR_MULT_PCT[d.dmg][need] : 0
+  }
   if (towers.length >= st.mazeTowers + 4) {
-    const fits = (x: Tower) => {
-      const d = TOWERS[x.kind]
-      if (need === 'air') return d.air ? 100 : 0
-      return d.ground ? ARMOR_MULT_PCT[d.dmg][need] : 0
-    }
     const best = towers
       .filter(x => x.level < 3 && (x.kind !== 'gatling' || towers.length > 20))
       .map(x => ({ x, score: coverage(x.x, x.y, towerStats(x).rangeMc, need === 'air' ? AIR_PATH : pathSet) * fits(x) }))
@@ -152,6 +152,13 @@ function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: nu
     const gain = len - cur
     const score = kind === 'gatling' ? gain * 100 + coverage(x, y, range, pathSet) - (pathSet.has(i) ? 0 : 5) : coverage(x, y, range, route) * 10 + gain * 20
     if (score > bestScore) { bestScore = score; bestCell = i }
+  }
+  // lane full: swap a level-1 tower that's weak against what's coming for one that counters it (same cell, maze unchanged)
+  if (bestCell < 0 && st.counter && kind !== 'gatling') {
+    const swap = towers
+      .filter(x => x.level === 1 && x.kind !== kind && fits(x) <= 50)
+      .sort((a, b) => coverage(b.x, b.y, TOWERS[kind].rangeMc, route) - coverage(a.x, a.y, TOWERS[kind].rangeMc, route) || a.id - b.id)[0]
+    if (swap && L.gold + sellValue(swap) >= TOWERS[kind].cost) return [{ t: 'sell', x: swap.x, y: swap.y }, { t: 'build', x: swap.x, y: swap.y, kind }]
   }
   if (bestCell < 0) return null
   return { t: 'build', x: bestCell % COLS, y: (bestCell / COLS) | 0, kind }

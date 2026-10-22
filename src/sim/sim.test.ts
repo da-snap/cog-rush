@@ -226,7 +226,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   put(g2, L2, 'repair', 6, 6)
   a.hp = 50 * MC
   quiet(g2)
-  assert.equal(a.shield, AURA.shieldHp * MC * 1.5, "shield scales like sent HP (1.5x at the start)")
+  assert.equal(a.shield, Math.floor(a.maxHp * AURA.shieldPct / 100))
   assert.ok(a.hp > 50 * MC)
 }
 

@@ -295,7 +295,7 @@ export function step(g: Game, cmds: Cmd[]): void {
     while (L.incoming.length && L.incoming[0].at <= g.tick) L.spawnQueue.push(...L.incoming.shift()!.robots)
     if (L.spawnQueue.length && g.tick % SEND.gapTicks === 0) spawn(g, L, L.spawnQueue.shift()!)
 
-    applyStatus(g, L)
+    applyStatus(L)
     moveRobots(g, L)
     burnGround(g, L)
     fireTowers(g, L)
@@ -387,16 +387,17 @@ const dist2 = (ax: number, ay: number, bx: number, by: number) => (ax - bx) ** 2
 const inRange = (t: Tower, r: Robot, rangeMc: number) => dist2(r.x, r.y, center(t.x), center(t.y)) <= rangeMc ** 2
 
 // Robot auras (repair, shield) and EMP auras (slow, overload, stun pulse). Before movement and firing.
-function applyStatus(g: Game, L: Lane) {
-  const auraBp = Math.floor(g.sendHpBp * SEND.hpPct / 100) // auras grow with robot HP so they stay relevant
+function applyStatus(L: Lane) {
+  const healed = new Set<Robot>()
   for (const r of L.robots) { r.slow = 0; r.amp = 100; if (r.stun > 0) r.stun-- }
   for (const a of L.robots) {
     if (a.kind !== 'repair' && a.kind !== 'shield') continue
     for (const r of L.robots) {
       if (r.hp <= 0) continue
-      if (a.kind === 'repair' && dist2(a.x, a.y, r.x, r.y) <= AURA.repairMc ** 2) r.hp = Math.min(r.maxHp, r.hp + Math.floor(AURA.repairHps * MC * auraBp / 10000 / TICK_HZ))
+      // heals don't stack: each robot is healed by at most one Repair bot per tick
+      if (a.kind === 'repair' && !healed.has(r) && dist2(a.x, a.y, r.x, r.y) <= AURA.repairMc ** 2) { healed.add(r); r.hp = Math.min(r.maxHp, r.hp + Math.floor(r.maxHp * AURA.repairPctPerS / 100 / TICK_HZ)) }
       // default for an open question: each robot gets one shield, shields don't stack, Repair doesn't heal them
-      if (a.kind === 'shield' && r !== a && !r.gotShield && dist2(a.x, a.y, r.x, r.y) <= AURA.shieldMc ** 2) { r.shield = Math.floor(AURA.shieldHp * MC * auraBp / 10000); r.gotShield = true }
+      if (a.kind === 'shield' && r !== a && !r.gotShield && dist2(a.x, a.y, r.x, r.y) <= AURA.shieldMc ** 2) { r.shield = Math.floor(r.maxHp * AURA.shieldPct / 100); r.gotShield = true }
     }
   }
   for (const t of L.towers) {

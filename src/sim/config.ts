@@ -110,7 +110,7 @@ export const ROBOTS: Record<RobotKind, RobotDef> = {
 }
 export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 
-export const AURA = { repairMc: 2000, repairHps: 6, shieldMc: 2000, shieldHp: 30 } // scaled like sent robots' HP
+export const AURA = { repairMc: 2000, repairPctPerS: 1.5, shieldMc: 2000, shieldPct: 25 } // balance: % of the target's max HP (flat GDD values break once HP scales; healing stacks up over a long maze)
 
 // Factories and sending. Values marked "default" are not in the GDD yet.
 export const FACTORY = {
@@ -122,8 +122,8 @@ export const FACTORY = {
 }
 export const SEND = {
   prepS: 20,
-  hpPct: 150, // balance: sent robots get 1.5x the GDD HP (neutrals use the base table)
-  hpGrowthPctPerMin: 35, // balance: sent robots gain HP over the match (compounding per minute), so sends stay relevant late
+  hpPct: 200, // balance: sent robots get 2x the GDD HP (neutrals use the base table)
+  hpGrowthPctPerMin: 45, // balance: sent robots gain HP over the match (compounding per minute), so sends stay relevant late
   previewS: 4,
   gapTicks: 10, // 0.5 s between robots of a released wave
   bountyPct: 25, // to the defender, also for neutral kills (default for gap 2)
