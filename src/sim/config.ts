@@ -11,7 +11,7 @@ export const EXIT_ROWS = 2 // rows 18..19
 
 export const START_GOLD = 250
 export const START_INCOME = 10
-export const INCOME_EVERY_S = 10
+export const INCOME_EVERY_S = 5 // Daniel 2026-10-22: halved from the GDD's 10 s
 export const LIVES = 20
 export const SELL_REFUND_PCT = 75
 
