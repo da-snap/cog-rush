@@ -143,7 +143,7 @@
           <span class="stat" title="Gold to spend"><b id="gold"></b><small data-s="g">gold</small></span>
           <span class="stat" title="Income: paid every 5 s, +1 for every 10 gold of robots you send"><b id="income"></b><small id="incomeSub" data-s=""></small></span>
         </div>
-        <div class="who bot"><span class="tag">BOT</span>
+        <div class="who bot"><span class="tag" id="botTag">BOT</span>
           <span class="stat" id="botLives"><b id="olives"></b><small data-s="hp">lives</small></span>
           <span class="stat"><b id="ogold"></b><small data-s="g">gold</small></span>
           <span class="stat"><b id="oincome"></b><small data-s="/5s">/5s</small></span>
@@ -174,6 +174,7 @@
       <button data-diff="easy" class="alt">Easy bot</button>
       <button data-diff="normal">Normal bot</button>
       <button data-diff="hard" class="alt">Hard bot</button>
+      <button id="lanBtn" class="alt">LAN match · 2 players</button>
       <details class="help">
         <summary>How to play</summary>
         <p><b>Build:</b> pick a tower, then tap a cell for one or drag for a row. The tower stays picked until you stop building. Every tower is also a wall: robots take the shortest open path, so make it long.</p>
@@ -209,6 +210,14 @@
         <tr><td><kbd>H</kbd> / <kbd>?</kbd></td><td>This help</td></tr>
       </table>
       <button id="helpClose" style="margin-top:12px">Back to the game</button>
+    </div>
+  </div>
+
+  <div id="lobby" class="screen" hidden>
+    <div class="card">
+      <h2 style="margin:0 0 12px">LAN MATCH</h2>
+      <p id="lobbyText"></p>
+      <button id="lobbyCancel" class="alt">Back to menu</button>
     </div>
   </div>
 

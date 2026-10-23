@@ -43,9 +43,12 @@ const world = new Scene3D(canvas)
 const size = () => { world.resize(innerWidth, innerHeight) }
 addEventListener('resize', size); size()
 
-const ME = 0, BOT = 1
+let ME = 0, OPP = 1 // lane indices; on LAN the server assigns the seat
 let g: Game | null = null
 let bot: { st: Strategy; mem: BotMem } | null = null
+// LAN match: the server sends one { n, cmds } packet per sim tick; we step exactly on those
+let net: { ws: WebSocket; queue: { n: number; cmds: Cmd[] }[]; lastAt: number } | null = null
+const rival = () => (net ? 'Rival' : 'Bot')
 let diff: keyof typeof DIFFICULTY = 'normal'
 let pending: Cmd[] = []
 let paused = false
@@ -64,8 +67,16 @@ let toastUntil = 0
 
 function start(d: keyof typeof DIFFICULTY) {
   diff = d
-  g = newGame()
+  closeNet()
+  ME = 0; OPP = 1
   bot = { st: DIFFICULTY[d], mem: newMem() }
+  begin()
+}
+
+function begin() {
+  g = newGame()
+  for (const id of ['botTag', 'oppView']) { const el = document.getElementById(id); if (el) el.textContent = rival().toUpperCase() }
+  $('pause').hidden = !!net
   pending = []; sel = null; view = ME; paused = false; lastLives = [20, 20]; prev.clear(); tab = 'build'; buildKind = null; demo = null
   sfx.unlockAudio(); sfx.setIntense(false); sfx.startMusic(); sfx.horn()
   $('menu').hidden = true
@@ -80,22 +91,66 @@ function end(game: Game) {
   const won = game.winner === ME, draw = game.winner === -2
   $('endTitle').textContent = draw ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT'
   $('endTitle').style.color = hex(draw ? C.white : won ? C.hazard : C.rogue)
-  $('endSub').textContent = `${DIFFICULTY[diff].name} bot · ${clock(secs(game))}`
-  const [a, b] = game.lanes
+  $('endSub').textContent = `${net ? 'LAN match' : DIFFICULTY[diff].name + ' bot'} · ${clock(secs(game))}`
+  const a = game.lanes[ME], b = game.lanes[OPP]
   const rows: [string, (L: Lane) => string | number][] = [
     ['Lives left', L => L.lives], ['Robots killed', L => L.stats.kills], ['Robots sent', L => L.stats.sent],
     ['Leaks taken', L => L.stats.leaksTaken], ['Income', L => `+${L.income}`],
     ['Gold on towers', L => L.stats.towerGold], ['Gold on sends', L => L.stats.sendGold],
   ]
-  $('endStats').innerHTML = `<tr><td></td><td>You</td><td>Bot</td></tr>` + rows.map(([n, f]) => `<tr><td>${n}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`).join('')
+  $('endStats').innerHTML = `<tr><td></td><td>You</td><td>${rival()}</td></tr>` + rows.map(([n, f]) => `<tr><td>${n}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`).join('')
   $('end').hidden = false
   sfx.stopMusic(); sfx.stinger(won)
   world.shake(won ? 0.2 : 0.6)
 }
 
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-diff]')) b.onclick = () => start(b.dataset.diff as keyof typeof DIFFICULTY)
-$('again').onclick = () => start(diff)
-$('toMenu').onclick = () => { $('end').hidden = true; $('menu').hidden = false; document.body.classList.add('menu'); g = null; startDemo() }
+$('again').onclick = () => {
+  if (!net) return start(diff)
+  net.ws.send(JSON.stringify({ t: 'rematch' }))
+  lobby('Waiting for your rival to accept the rematch…')
+}
+
+// --- LAN match -------------------------------------------------------------------
+
+function lobby(text: string, showCancel = true) {
+  $('lobbyText').textContent = text
+  $('lobbyCancel').hidden = !showCancel
+  $('menu').hidden = true; $('end').hidden = true; $('lobby').hidden = false
+}
+function closeNet() {
+  if (!net) return
+  const ws = net.ws
+  net = null
+  ws.onclose = null
+  ws.close()
+}
+function toMenu() {
+  closeNet()
+  $('end').hidden = true; $('lobby').hidden = true; $('menu').hidden = false
+  document.body.classList.add('menu'); g = null; startDemo(); sfx.stopMusic()
+}
+$('lanBtn').onclick = () => {
+  sfx.unlockAudio()
+  closeNet()
+  let ws: WebSocket
+  try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`) } catch { return lobby('Could not connect.') }
+  net = { ws, queue: [], lastAt: performance.now() }
+  lobby('Connecting to the LAN server…')
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data)
+    if (!net || net.ws !== ws) return
+    if (m.t === 'seat') { ME = m.seat; OPP = 1 - m.seat }
+    else if (m.t === 'waiting') lobby(m.players < 2 ? `You are player ${ME + 1}. Waiting for a second player to open ${location.host}…` : 'Waiting for your rival…')
+    else if (m.t === 'full') { closeNet(); lobby('This LAN match already has two players.') }
+    else if (m.t === 'start') { $('lobby').hidden = true; net.queue = []; begin(); toast(`LAN match: you are player ${ME + 1}`, 3000) }
+    else if (m.t === 'tick') { net.queue.push({ n: m.n, cmds: m.cmds }); net.lastAt = performance.now() }
+    else if (m.t === 'left') { sfx.stopMusic(); g = null; lobby('Your rival left the match. Waiting for them to come back…') }
+  }
+  ws.onclose = () => { if (net?.ws === ws) { net = null; g = null; lobby('No LAN server here. Start one with "npm run lan" on one computer and open the address it prints on both devices.') } }
+}
+$('lobbyCancel').onclick = toMenu
+$('toMenu').onclick = toMenu
 $('pause').onclick = () => togglePause()
 const MUTE = (m: boolean) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/>${m ? '<path d="M17 9l5 6M22 9l-5 6"/>' : '<path d="M17 8a5 5 0 0 1 0 8M19.5 5.5a9 9 0 0 1 0 13"/>'}</svg>`
 for (const id of ['mute', 'menuMute']) {
@@ -109,7 +164,7 @@ let demo: { g: Game; mems: BotMem[] } | null = null
 function startDemo() { demo = { g: newGame(), mems: [newMem(), newMem()] } }
 startDemo()
 function togglePause() {
-  if (!g || g.winner !== -1) return
+  if (!g || g.winner !== -1 || net) return
   paused = !paused
   $('pause').innerHTML = paused ? PLAY : PAUSE
   toast(paused ? 'Paused' : 'Resumed', paused ? 1e9 : 800)
@@ -341,7 +396,7 @@ function factoryHtml(L: Lane): string {
 function opponentHtml(g: Game, L: Lane): string {
   const facts = ROBOT_KINDS.filter(k => L.factories[k]).map(k => `${ROBOTS[k].name} L${L.factories[k]}`).join(', ')
   const towers = L.towers.filter(Boolean).length
-  return `<div class="info"><b class="warn">BOT LANE</b> · ${L.lives} lives · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
+  return `<div class="info"><b class="warn">${rival().toUpperCase()} LANE</b> · ${L.lives} lives · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
     `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${L.queue.length} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
     `<div class="row">${btn('back', 'Back to my lane', { cls: 'alt' })}</div>`
 }
@@ -378,7 +433,7 @@ addEventListener('keydown', e => {
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 let lastLives = [0, 0]
 function hud(g: Game) {
-  const L = g.lanes[ME], O = g.lanes[BOT], t = secs(g)
+  const L = g.lanes[ME], O = g.lanes[OPP], t = secs(g)
   $('lives').textContent = String(L.lives)
   $('gold').textContent = String(L.gold)
   $('income').textContent = `+${L.income}`
@@ -431,25 +486,47 @@ function frame(now: number) {
   }
   const ui = uiState()
   const running = !paused && g.winner === -1
-  if (running) acc = Math.min(acc + dtMs, DT * 10) // don't spiral after a background tab
   let stepped = false
-  while (running && acc >= DT) {
-    acc -= DT
-    prev = new Map(g.lanes.flatMap(L => L.robots.map(r => [r.id, { x: r.x, y: r.y }] as const)))
-    const wasSealed = g.lanes[ME].sealed
-    step(g, [...pending, ...botThink(g, BOT, bot!.st, bot!.mem)])
-    pending = []
+  const one = (cmds: Cmd[]) => {
+    const game = g!
+    prev = new Map(game.lanes.flatMap(L => L.robots.map(r => [r.id, { x: r.x, y: r.y }] as const)))
+    const wasSealed = game.lanes[ME].sealed
+    step(game, cmds)
     stepped = true
-    world.onStep(g, ui)
+    if (import.meta.env.DEV && game.tick % 100 === 0) ((window as unknown as { __h: Record<number, number> }).__h ??= {})[game.tick] = [...JSON.stringify(game.lanes)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
+    world.onStep(game, ui)
+    after(game, wasSealed)
+  }
+  let alpha = 1
+  if (net) {
+    // LAN: send our commands, step on every tick packet (catch up if a few arrived at once)
+    if (pending.length && net.ws.readyState === WebSocket.OPEN) net.ws.send(JSON.stringify({ t: 'cmds', cmds: pending }))
+    pending = []
+    for (let k = 0; k < 20 && net.queue.length && g.winner === -1; k++) one(net.queue.shift()!.cmds)
+    alpha = Math.min(1, (now - net.lastAt) / DT)
+  } else {
+    if (running) acc = Math.min(acc + dtMs, DT * 10) // don't spiral after a background tab
+    while (running && acc >= DT && g.winner === -1) {
+      acc -= DT
+      one([...pending, ...botThink(g, OPP, bot!.st, bot!.mem)])
+      pending = []
+    }
+    alpha = running ? acc / DT : 1
+  }
+  if (stepped) { hud(g); renderPanel() }
+  world.render(g, ui, alpha, prev, dtMs / 1000, innerWidth, innerHeight)
+  adapt(dtMs)
+}
+
+/** toasts and sounds after one sim step */
+function after(g: Game, wasSealed: boolean) {
+  {
     for (const e of g.events) if (e.t === 'wave' && e.p === ME) toast(secs(g) >= SUDDEN.fromS ? `Sudden death wave ${e.n + 1}!` : `Neutral wave ${e.n + 1}`)
     if (!wasSealed && g.lanes[ME].sealed) { toast('Lane sealed! Breach mode', 2500); sfx.alarm() }
     if (g.tick === SEND.prepS * TICK_HZ) toast('Sending unlocked!')
     if (g.tick === SUDDEN.fromS * TICK_HZ) { toast('Sudden death: waves every 15 s', 3000); sfx.setIntense(true) }
-    if (g.winner !== -1) { end(g); break }
+    if (g.winner !== -1) end(g)
   }
-  if (stepped) { hud(g); renderPanel() }
-  world.render(g, ui, running ? acc / DT : 1, prev, dtMs / 1000, innerWidth, innerHeight)
-  adapt(dtMs)
 }
 
 // slow device? drop the render resolution step by step (never below 1x CSS pixels)
@@ -470,5 +547,5 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorke
 if (import.meta.env.DEV) Object.assign(window, {
   game: () => g, cmd: (c: Cmd) => pending.push(c), world,
   // ff(seconds, true) fast-forwards with a Normal bot playing for you too
-  ff: (s: number, auto = false) => { const me = newMem(); for (let i = 0; i < s * TICK_HZ && g && g.winner === -1; i++) { step(g, [...pending, ...(auto ? botThink(g, ME, DIFFICULTY.normal, me) : []), ...botThink(g, BOT, bot!.st, bot!.mem)]); pending = [] } if (g) { hud(g); renderPanel(true); if (g.winner !== -1) end(g) } },
+  ff: (s: number, auto = false) => { const me = newMem(); for (let i = 0; i < s * TICK_HZ && g && g.winner === -1; i++) { step(g, [...pending, ...(auto ? botThink(g, ME, DIFFICULTY.normal, me) : []), ...botThink(g, OPP, bot!.st, bot!.mem)]); pending = [] } if (g) { hud(g); renderPanel(true); if (g.winner !== -1) end(g) } },
 })
