@@ -8,7 +8,7 @@ import {
   slotsUsed, step, towerStats, upgradeCost, waveCap, wouldSeal, type Cmd, type Game, type Lane, type Tower,
 } from './sim/sim.ts'
 import { DIFFICULTY, botThink, newMem, type BotMem, type Strategy } from './sim/bot.ts'
-import { VIS, drawLane, hex, type Fx, type View } from './render.ts'
+import { C, ROBOT_ICON, TOWER_ICON, drawLane, hex, robotColor, svgIcon, towerColor, type Fx, type View } from './render.ts'
 
 const TOWER_ROLE: Record<TowerKind, string> = {
   gatling: 'Cheap single target · Kinetic · ground + air',
@@ -29,7 +29,10 @@ const ROBOT_ROLE: Record<RobotKind, string> = {
   colossus: 'Heavy · boss, sendable from 5:00',
 }
 const short = (k: RobotKind) => ROBOTS[k].name.replace(' bot', '')
-const DMG_SHORT = { kinetic: 'Kin', explosive: 'Exp', energy: 'Nrg' } as const
+const DMG_SHORT = { kinetic: 'KIN', explosive: 'EXP', energy: 'NRG' } as const
+const dmgTag = (k: TowerKind) => `<b style="color:${hex(towerColor(k))}">${DMG_SHORT[TOWERS[k].dmg]}${TOWERS[k].air && !TOWERS[k].ground ? '·AIR' : ''}</b>`
+const PAUSE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>'
+const PLAY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M7 4v16l12-8z"/></svg>'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const laneEl = $('lane'), body = $('body'), banner = $('banner'), toastEl = $('toast')
@@ -66,15 +69,15 @@ function start(d: keyof typeof DIFFICULTY) {
   pending = []; sel = null; view = ME; paused = false; lastLives = [20, 20]; fx = []; prev.clear(); tab = 'build'
   $('menu').hidden = true
   $('end').hidden = true
-  $('pause').textContent = 'II'
+  $('pause').innerHTML = PAUSE
   toast('Prep phase: build your maze!', 3000)
   renderPanel(true)
 }
 
 function end(game: Game) {
   const won = game.winner === ME, draw = game.winner === -2
-  $('endTitle').textContent = draw ? 'Draw' : won ? 'Victory!' : 'Defeat'
-  $('endTitle').style.color = draw ? '#e6edf3' : won ? '#3fb950' : '#ff7b72'
+  $('endTitle').textContent = draw ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT'
+  $('endTitle').style.color = hex(draw ? C.white : won ? C.hazard : C.rogue)
   $('endSub').textContent = `${DIFFICULTY[diff].name} bot · ${clock(secs(game))}`
   const [a, b] = game.lanes
   const rows: [string, (L: Lane) => string | number][] = [
@@ -93,7 +96,7 @@ $('pause').onclick = () => togglePause()
 function togglePause() {
   if (!g || g.winner !== -1) return
   paused = !paused
-  $('pause').textContent = paused ? '▶' : 'II'
+  $('pause').innerHTML = paused ? PLAY : PAUSE
   toast(paused ? 'Paused' : 'Resumed', paused ? 1e9 : 800)
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && g && !paused && g.winner === -1) togglePause() })
@@ -230,19 +233,22 @@ let lastHtml = ''
 function renderPanel(force = false) {
   if (!g) return
   for (const b of document.querySelectorAll<HTMLButtonElement>('#tabs button')) b.classList.toggle('on', b.dataset.tab === tab)
+  const ready = readyCount(g.lanes[ME])
+  const sendTab = document.querySelector<HTMLButtonElement>('[data-tab=send]')!, badge = ready ? `SEND <span class="badge">${ready}</span>` : 'SEND'
+  if (sendTab.innerHTML !== badge) sendTab.innerHTML = badge
   const html = mainLane() !== ME ? opponentHtml(g, g.lanes[view]) : tab === 'build' ? buildHtml(g, g.lanes[ME]) : tab === 'send' ? sendHtml(g, g.lanes[ME]) : factoryHtml(g.lanes[ME])
   if (html !== lastHtml || force) { body.innerHTML = html; lastHtml = html }
 }
 
 const btn = (act: string, label: string, opts: { arg?: string; sub?: string; cls?: string; off?: boolean | string | null; icon?: string; color?: string; key?: string } = {}) =>
-  `<button data-act="${act}" ${opts.arg ? `data-arg="${opts.arg}"` : ''} class="${opts.cls ?? ''}" ${opts.off ? 'disabled' : ''}${opts.color ? ` style="border-left:3px solid ${opts.color}"` : ''}>` +
-  `${opts.icon ? `<span class="ic" style="color:${opts.color}">${opts.icon}</span>` : ''}${label}${opts.key ? `<kbd>${opts.key}</kbd>` : ''}${opts.sub ? `<small>${opts.sub}</small>` : ''}</button>`
+  `<button data-act="${act}" ${opts.arg ? `data-arg="${opts.arg}"` : ''} class="${opts.cls ?? ''}" ${opts.off ? 'disabled' : ''}>` +
+  `${opts.icon ? `<span class="ic">${opts.icon}</span>` : ''}${label}${opts.key ? `<kbd>${opts.key}</kbd>` : ''}${opts.sub ? `<small>${opts.sub}</small>` : ''}</button>`
 
 function buildHtml(g: Game, L: Lane): string {
   if (!sel) {
-    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>' : `Tap a cell to build · drag for a row of <b style="color:${hex(VIS.tower[rowKind].color)}">${TOWERS[rowKind].name}</b>`
+    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>' : `Tap a cell to build · drag for a row of <b style="color:${hex(C.hazard)}">${TOWERS[rowKind].name}</b>`
     return `<div class="info">${msg}</div><div class="grid six">` +
-      TOWER_KINDS.map((k, i) => `<button data-act="rowKind" data-arg="${k}" class="pick ${k === rowKind ? 'sel' : ''}"><span class="ic" style="color:${hex(VIS.tower[k].color)}">${VIS.tower[k].icon}</span>${TOWERS[k].name}<br>${TOWERS[k].cost}g<kbd>${i + 1}</kbd></button>`).join('') +
+      TOWER_KINDS.map((k, i) => `<button data-act="rowKind" data-arg="${k}" class="pick ${k === rowKind ? 'sel' : ''}"><span class="ic">${svgIcon(TOWER_ICON[k], towerColor(k), 20)}</span>${TOWERS[k].name}<span class="cost">${TOWERS[k].cost}g</span><kbd>${i + 1}</kbd></button>`).join('') +
       '</div>' + legend()
   }
   const t = L.towers[sel.y * COLS + sel.x]
@@ -250,12 +256,12 @@ function buildHtml(g: Game, L: Lane): string {
     const why = canBuild(L, sel.x, sel.y, 'gatling')
     if (why && why !== 'Not enough gold') return `<div class="info warn">${why}</div>`
     const seals = wouldSeal(L, sel.x, sel.y)
-    return `<div class="info ${seals ? 'warn' : ''}">${seals ? '⚠ This seals your lane! Robots will breach it.' : 'Pick a tower for this cell.'}</div><div class="grid">` +
-      TOWER_KINDS.map((k, i) => btn('build', TOWERS[k].name, { arg: k, key: String(i + 1), sub: `${TOWERS[k].cost} · ${DMG_SHORT[TOWERS[k].dmg]}`, cls: seals ? 'tile danger' : 'tile', off: L.gold < TOWERS[k].cost, icon: VIS.tower[k].icon, color: hex(VIS.tower[k].color) })).join('') + '</div>'
+    return `<div class="info ${seals ? 'warn' : ''}">${seals ? 'This seals your lane! Robots will breach it.' : 'Pick a tower for this cell.'}</div><div class="grid">` +
+      TOWER_KINDS.map((k, i) => btn('build', TOWERS[k].name, { arg: k, key: String(i + 1), sub: `<span class="cost">${TOWERS[k].cost}g</span> ${dmgTag(k)}`, cls: seals ? 'tile seal' : 'tile', off: L.gold < TOWERS[k].cost, icon: svgIcon(TOWER_ICON[k], towerColor(k)) })).join('') + '</div>'
   }
   const st = towerStats(t), d = TOWERS[t.kind]
   const branch = t.branch ? d.branches.find(b => b.key === t.branch)!.name : ''
-  const info = `<b style="color:${hex(VIS.tower[t.kind].color)}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${Math.round(t.maxHp / 1000)} · ${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`
+  const info = `<b style="color:${hex(towerColor(t.kind))}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${Math.round(t.maxHp / 1000)} · ${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`
   let up: string
   if (t.level === 1) up = btn('upgrade', `Upgrade ${upgradeCost(t)}`, { key: 'U', sub: '+60% dmg, +10% range', off: !!canUpgrade(L, t.x, t.y) })
   else if (t.level === 2) up = d.branches.map((b, i) => btn('upgrade', `${b.name} ${upgradeCost(t)}`, { arg: b.key, key: 'AB'[i], sub: b.desc, off: !!canUpgrade(L, t.x, t.y, b.key) })).join('')
@@ -275,8 +281,8 @@ function sendHtml(g: Game, L: Lane): string {
     const lvl = L.factories[k], q = L.queue.filter(x => x.kind === k).length
     const why = canLoad(g, L, k)
     return btn('load', short(k), {
-      arg: k, cls: 'tile', off: !!why, icon: VIS.robot[k].icon, color: hex(VIS.robot[k].color), key: 'QWERTYUI'[i],
-      sub: lvl ? `${ROBOTS[k].sendCost}g · ${q}/${waveCap(k, lvl)}` : 'no factory',
+      arg: k, cls: 'tile', off: !!why, icon: svgIcon(ROBOT_ICON[k], robotColor(k), 18), key: 'QWERTYUI'[i],
+      sub: lvl ? `${ROBOTS[k].sendCost}g · ${q}/${waveCap(k, lvl)}` : 'locked',
     })
   }).join('')
   return `<div class="info">${info}</div><div class="grid four">${tiles}</div><div class="row" style="margin-top:5px">${btn('release', `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L), key: 'Space' })}</div>`
@@ -285,7 +291,7 @@ function sendHtml(g: Game, L: Lane): string {
 function factoryHtml(L: Lane): string {
   const k = selFactory, lvl = L.factories[k], r = ROBOTS[k]
   const tiles = ROBOT_KINDS.map(x => btn('pickFactory', short(x), {
-    arg: x, cls: x === k ? 'tile sel' : 'tile', icon: VIS.robot[x].icon, color: hex(VIS.robot[x].color),
+    arg: x, cls: x === k ? 'tile sel' : 'tile', icon: svgIcon(ROBOT_ICON[x], robotColor(x), 18),
     sub: L.factories[x] ? `Level ${L.factories[x]}` : `${ROBOTS[x].factoryCost}g`,
   })).join('')
   const why = canFactory(L, k)
@@ -298,7 +304,7 @@ function factoryHtml(L: Lane): string {
 function opponentHtml(g: Game, L: Lane): string {
   const facts = ROBOT_KINDS.filter(k => L.factories[k]).map(k => `${ROBOTS[k].name} L${L.factories[k]}`).join(', ')
   const towers = L.towers.filter(Boolean).length
-  return `<div class="info"><b class="warn">Bot lane</b> · ❤ ${L.lives} · ⚙ ${L.gold} · +${L.income}/${INCOME_EVERY_S}s · ${towers} towers</div>` +
+  return `<div class="info"><b class="warn">BOT LANE</b> · ${L.lives} lives · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
     `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${L.queue.length} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
     `<div class="row">${btn('back', 'Back to my lane', { cls: 'alt' })}</div>`
 }
@@ -341,10 +347,10 @@ function hud(g: Game) {
   $('lives').textContent = String(L.lives)
   $('gold').textContent = String(L.gold)
   $('income').textContent = `+${L.income}`
-  $('incomeSub').textContent = L.sealed ? 'frozen!' : `next in ${Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))}s`
+  $('incomeSub').textContent = L.sealed ? 'frozen!' : `in ${Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))}s`
   $('income').classList.toggle('frozen', L.sealed)
   $('tickFill').style.width = `${(t % INCOME_EVERY_S) / INCOME_EVERY_S * 100}%`
-  $('tickFill').style.background = L.sealed ? '#ff6b6b' : '#3fb950'
+  $('tick').classList.toggle('frozen', L.sealed)
   $('olives').textContent = String(O.lives)
   $('ogold').textContent = String(O.gold)
   $('oincome').textContent = `+${O.income}`
@@ -354,13 +360,13 @@ function hud(g: Game) {
     if (x.lives < lastLives[i]) { el.classList.remove('hit'); void el.offsetWidth; el.classList.add('hit') }
     lastLives[i] = x.lives
   })
-  $('clock').textContent = t < SEND.prepS ? `Prep ${Math.ceil(SEND.prepS - t)}` : t >= SUDDEN.fromS ? `⚠ ${clock(t)}` : clock(t)
+  $('clock').innerHTML = t < SEND.prepS ? `PREP <span class="amber">${Math.ceil(SEND.prepS - t)}</span>` : t >= SUDDEN.fromS ? `<span class="warn">SD</span> ${clock(t)}` : clock(t)
   const shown = g.lanes[mainLane()], inc = shown.incoming[0]
   if (inc) {
     const counts = new Map<RobotKind, number>()
     for (const r of inc.robots) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1)
-    banner.textContent = `${shown.p === ME ? '⚠ Incoming' : 'Your wave lands'} in ${Math.ceil((inc.at - g.tick) / TICK_HZ)}s: ` + [...counts].map(([k, n]) => `${n}× ${ROBOTS[k].name}`).join(', ')
-    banner.style.background = shown.p === ME ? '#da3633e6' : '#238636e6'
+    banner.textContent = `${shown.p === ME ? 'INCOMING' : 'YOUR WAVE LANDS'} in ${Math.ceil((inc.at - g.tick) / TICK_HZ)}s: ` + [...counts].map(([k, n]) => `${n}× ${ROBOTS[k].name}`).join(', ')
+    banner.className = shown.p === ME ? '' : 'ours'
     banner.hidden = false
   } else banner.hidden = true
 }
@@ -403,13 +409,14 @@ app.ticker.add(t => {
   for (const d of drawn) {
     const mine = d.L.p === ME
     drawLane(gfx, d.L, d.v, {
+      me: ME,
       alpha, prev, now, mini: d.mini,
       fx: d.mini ? [] : fx.filter(f => f.p === d.L.p),
       sel: mine ? sel : null, preview: mine && sel && !d.L.towers[sel.y * COLS + sel.x] && tab === 'build' ? 'gatling' : null,
       drag: mine && drag && drag.cells.length > 1 ? drag.cells : [], dragKind: rowKind,
     })
   }
-  if (mini) gfx.rect(mini.x - 1, mini.y - 1, mini.cell * COLS + 2, mini.cell * ROWS + 2).stroke({ width: 1, color: big === ME ? 0xff7b72 : 0x3fb950 })
+  if (mini) gfx.rect(mini.x - 1, mini.y - 1, mini.cell * COLS + 2, mini.cell * ROWS + 2).stroke({ width: 1, color: big === ME ? C.rogue : C.hazard })
 })
 
 // ?play=easy|normal|hard skips the menu

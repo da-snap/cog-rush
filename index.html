@@ -3,78 +3,119 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-  <meta name="theme-color" content="#0d1117" />
+  <meta name="theme-color" content="#0B0D10" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/icon.svg" />
   <title>CogRush</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <style>
+    /* CogRush Design System tokens */
+    :root {
+      --void: #0B0D10; --hull: #14171C; --plate: #1C2027; --seam: #2A3038; --seam2: #3A424D; --groove: #20252C;
+      --dust: #9BA3AE; --white: #ECEEF1; --hazard: #FFC42E; --hazard-deep: #D99A00; --hazard-ink: #17130A;
+      --rogue: #FF5468; --rogue-ink: #1A0A0D; --online: #8CE66B; --online-ink: #0C1608; --gold: #F2D58A; --offline: #4A525E; --muted: #7A828E;
+      --display: 'Martian Mono', ui-monospace, monospace; --ui: 'JetBrains Mono', ui-monospace, monospace;
+      --cut-s: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+      --cut-m: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+    }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    html, body { margin: 0; height: 100%; background: #0d1117; color: #e6edf3; font: 14px/1.3 system-ui, -apple-system, sans-serif; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; }
-    #app { display: flex; flex-direction: column; height: 100dvh; max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 6px env(safe-area-inset-bottom); }
-    #hud { display: flex; gap: 8px; align-items: center; padding: 4px 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .players { flex: 1; display: grid; gap: 2px; min-width: 0; }
-    .who { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
-    .who .tag { width: 30px; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #58a6ff; }
-    .who.bot .tag { color: #ff7b72; }
-    .who.bot { opacity: .85; font-size: 12px; }
-    .stat b { font-size: 16px; margin-left: 2px; }
+    html, body { margin: 0; height: 100%; background: var(--void); color: var(--white); font: 14px/1.35 var(--ui); overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; font-variant-numeric: tabular-nums; }
+    #app { display: flex; flex-direction: column; height: 100dvh; max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 8px env(safe-area-inset-bottom); }
+
+    /* HUD */
+    #hud { display: flex; gap: 8px; align-items: center; padding: 6px 0 4px; white-space: nowrap; }
+    .players { flex: 1; display: grid; gap: 4px; min-width: 0; }
+    .who { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+    .tag { font-weight: 700; font-size: 11px; letter-spacing: .1em; padding: 2px 6px; align-self: center; }
+    .who .tag { background: var(--hazard); color: var(--hazard-ink); }
+    .who.bot .tag { background: var(--rogue); color: var(--rogue-ink); }
+    .stat b { font-weight: 700; font-size: 17px; }
+    .stat small { color: var(--dust); margin-left: 3px; font-size: 11px; font-weight: 500; }
+    #gold, #ogold { color: var(--gold); }
+    #income, #oincome { color: var(--online); }
     .who.bot .stat b { font-size: 13px; }
-    .stat small { color: #8b949e; margin-left: 3px; font-size: 11px; }
-    .stat.low b { color: #ff6b6b; }
+    .who.bot { color: var(--dust); }
+    .stat.low b { color: var(--rogue); }
     .stat.hit { animation: hit .6s; }
-    @keyframes hit { 0%, 60% { color: #ff4d4f; transform: scale(1.15); } }
-    .frozen { color: #ff6b6b !important; }
-    .side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+    @keyframes hit { 0%, 60% { color: var(--rogue); transform: scale(1.15); } }
+    .frozen { color: var(--rogue) !important; }
+    .side { display: flex; align-items: center; gap: 8px; }
     .side .btns { display: flex; gap: 4px; }
-    #clock { font-size: 15px; font-weight: 600; }
-    #tick { height: 3px; background: #21262d; border-radius: 2px; margin: 0 2px 4px; overflow: hidden; }
-    #tickFill { height: 100%; width: 0; background: #3fb950; }
-    kbd { display: inline-block; font: 600 10px ui-monospace, monospace; padding: 0 4px; margin-left: 4px; border: 1px solid #484f58; border-radius: 4px; color: #c9d1d9; background: #161b22; vertical-align: 1px; }
-    @media (hover: none) and (pointer: coarse) { button kbd { display: none; } }
-    .keys { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
-    .keys td { padding: 4px 2px; border-bottom: 1px solid #21262d; color: #c9d1d9; text-align: left !important; }
-    .keys td:first-child { white-space: nowrap; width: 1%; padding-right: 10px; }
+    #clock { font: 800 15px var(--display); }
+    .amber { color: var(--hazard); }
+    #tick { height: 4px; background: var(--groove); margin: 2px 0 6px; overflow: hidden; }
+    #tickFill { height: 100%; width: 0; background: repeating-linear-gradient(90deg, var(--hazard) 0 10px, var(--hazard-deep) 10px 12px); }
+    #tick.frozen #tickFill { background: var(--rogue); }
+
+    /* lane overlays */
     #lane { flex: 1; min-height: 0; position: relative; }
-    #banner { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); background: #da3633e6; color: #fff; padding: 6px 12px; border-radius: 8px; font-weight: 600; pointer-events: none; white-space: nowrap; z-index: 2; }
-    #toast { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: #30363de6; padding: 6px 12px; border-radius: 8px; pointer-events: none; white-space: nowrap; z-index: 2; }
-    #panel { padding: 4px 0 6px; }
-    #tabs { display: flex; gap: 4px; margin-bottom: 6px; }
-    #tabs button { flex: 1; min-height: 40px; background: #21262d; color: #9aa5b1; }
-    #tabs button.on { background: #30363d; color: #fff; box-shadow: inset 0 -2px 0 #2f81f7; }
-    #body { height: 176px; overflow: hidden; }
-    .info { color: #9aa5b1; min-height: 18px; margin: 0 2px 5px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .warn { color: #ff6b6b; font-weight: 600; }
-    .grid { display: grid; gap: 5px; grid-template-columns: repeat(3, 1fr); }
-    .grid.four { grid-template-columns: repeat(4, 1fr); }
+    #banner { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); background: var(--rogue); color: var(--rogue-ink); padding: 6px 12px; font-weight: 700; font-size: 13px; letter-spacing: .04em; pointer-events: none; white-space: nowrap; z-index: 2; clip-path: var(--cut-s); }
+    #banner.ours { background: var(--online); color: var(--online-ink); }
+    #toast { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: var(--plate); border: 1px solid var(--seam2); padding: 6px 12px; font-size: 13px; pointer-events: none; white-space: nowrap; z-index: 2; clip-path: var(--cut-s); }
+
+    /* mode tabs */
+    #panel { padding: 4px 0 8px; }
+    #tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }
+    #tabs button { min-height: 44px; background: var(--hull); color: var(--dust); border: 0; border-bottom: 3px solid transparent; clip-path: none; font-weight: 700; letter-spacing: .06em; display: flex; align-items: center; justify-content: center; gap: 6px; }
+    #tabs button.on { background: var(--plate); color: var(--white); border-bottom-color: var(--hazard); }
+    .badge { background: var(--online); color: var(--online-ink); font-size: 11px; padding: 0 5px; }
+    #body { height: 180px; overflow: hidden; }
+    .info { color: var(--dust); min-height: 18px; margin: 0 2px 6px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .info b { color: var(--white); }
+    .warn, .info .warn { color: var(--rogue); font-weight: 700; }
+    .cost { color: var(--gold); font-weight: 700; }
+    .inc { color: var(--online); font-weight: 700; }
+    .grid { display: grid; gap: 6px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid.six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .row { display: flex; gap: 6px; }
     .row > * { flex: 1; }
-    button { min-height: 44px; min-width: 44px; padding: 4px 8px; border: 0; border-radius: 10px; background: #2f81f7; color: #fff; font: 600 14px system-ui, sans-serif; cursor: pointer; touch-action: manipulation; }
-    button small { display: block; font-weight: 400; font-size: 11px; opacity: .85; }
-    button.alt { background: #30363d; }
-    button.danger { background: #da3633; }
-    button.go { background: #238636; }
-    button:disabled { opacity: .35; cursor: default; }
-    button.ghost { background: #21262d; min-height: 32px; padding: 0 10px; font-size: 13px; }
-    .tile { background: #21262d; border: 1px solid #30363d; text-align: left; font-size: 13px; padding: 3px 6px; white-space: nowrap; overflow: hidden; }
-    .tile.sel { background: #30363d; border-color: #8b949e; }
-    .grid.six { grid-template-columns: repeat(6, 1fr); }
-    .pick { min-height: 44px; padding: 2px; text-align: center; font-size: 11px; background: #21262d; border: 1px solid #30363d; }
-    .pick .ic { float: none; display: block; font-size: 16px; }
-    .pick.sel { background: #30363d; border: 2px solid #e6edf3; }
-    .tile .ic { float: right; font-size: 16px; }
-    .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0d1117f2; z-index: 10; padding: 24px; }
-    .card { max-width: 360px; width: 100%; text-align: center; }
-    .card h1 { font-size: 44px; margin: 0 0 4px; letter-spacing: 1px; }
-    .card h1 span { color: #2f81f7; }
-    .card p { color: #9aa5b1; }
-    .card button { width: 100%; margin: 6px 0; min-height: 52px; font-size: 16px; }
-    .card table { width: 100%; margin: 12px 0; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-    .card td { padding: 4px; border-bottom: 1px solid #21262d; }
-    .card td:not(:first-child) { text-align: right; }
-    .help { text-align: left; font-size: 13px; color: #9aa5b1; }
-    .help b { color: #e6edf3; }
+
+    /* buttons: amber primary, plate secondary, rogue outline for destructive; chamfer S */
+    button { min-height: 44px; min-width: 44px; padding: 4px 10px; border: 0; background: var(--hazard); color: var(--hazard-ink); font: 700 14px var(--ui); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; touch-action: manipulation; clip-path: var(--cut-s); }
+    button:active { background: var(--hazard-deep); }
+    button small { display: block; font-weight: 500; font-size: 11px; letter-spacing: 0; text-transform: none; opacity: .85; }
+    button.alt, button.ghost { background: var(--plate); color: var(--white); box-shadow: inset 0 0 0 2px var(--seam2); }
+    button.danger { background: transparent; color: var(--rogue); box-shadow: inset 0 0 0 2px var(--rogue); }
+    button.go { background: var(--hazard); color: var(--hazard-ink); }
+    button:disabled { background: var(--groove); color: var(--muted); box-shadow: none; cursor: not-allowed; }
+    button.ghost { min-height: 40px; width: 40px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
+    .tile { background: var(--hull); color: var(--white); box-shadow: inset 0 0 0 2px var(--seam); text-align: left; font-size: 13px; padding: 4px 8px; white-space: nowrap; overflow: hidden; text-transform: none; letter-spacing: 0; clip-path: var(--cut-m); }
+    .tile.sel { background: var(--plate); box-shadow: inset 0 0 0 2px var(--hazard); }
+    .tile.seal { box-shadow: inset 0 0 0 2px var(--rogue); }
+    .tile:disabled { background: var(--hull); color: var(--white); opacity: .45; }
+    .tile .ic { float: left; margin: 2px 6px 0 0; line-height: 0; }
+    @media (max-width: 500px) { .tile kbd { display: none; } }
+    .pick { min-height: 64px; padding: 4px 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 11px; background: var(--hull); color: var(--white); box-shadow: inset 0 0 0 2px var(--seam); text-transform: none; letter-spacing: 0; clip-path: var(--cut-m); position: relative; }
+    .pick .ic { line-height: 0; }
+    .pick.sel { background: var(--plate); box-shadow: inset 0 0 0 2px var(--hazard); }
+    .pick kbd { position: absolute; top: 3px; right: 3px; margin: 0; }
+    kbd { display: inline-block; font: 600 10px var(--ui); padding: 0 4px; margin-left: 4px; border: 1px solid var(--seam2); color: var(--dust); background: var(--void); vertical-align: 1px; text-transform: uppercase; }
+    button:not(.tile):not(.pick) kbd { background: transparent; border-color: currentColor; color: inherit; opacity: .7; }
+    @media (hover: none) and (pointer: coarse) { button kbd { display: none; } }
+
+    /* screens */
+    .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(11, 13, 16, .96); z-index: 10; padding: 24px; overflow: auto; }
+    .card { max-width: 380px; width: 100%; text-align: center; }
+    .card h1 { font: 800 44px/1 var(--display); letter-spacing: -.02em; margin: 0 0 10px; }
+    .card h1 span { color: var(--hazard); }
+    .card h2 { font: 600 22px var(--display); }
+    .card p { color: var(--dust); }
+    .card button { width: 100%; margin: 6px 0; min-height: 52px; font-size: 15px; }
+    .card table { width: 100%; margin: 12px 0; border-collapse: collapse; }
+    .card td { padding: 6px 4px; border-bottom: 1px solid var(--groove); }
+    .card td:not(:first-child) { text-align: right; font-weight: 700; }
+    .label { font: 600 12px/16px var(--ui); letter-spacing: .1em; text-transform: uppercase; color: var(--dust); }
+    .help { text-align: left; font-size: 13px; color: var(--dust); }
+    .help b { color: var(--white); }
+    .help summary { cursor: pointer; color: var(--hazard); margin: 10px 0; }
+    .keys { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    .keys td { padding: 5px 2px; border-bottom: 1px solid var(--groove); color: var(--white); text-align: left !important; font-weight: 400 !important; }
+    .keys td:first-child { white-space: nowrap; width: 1%; padding-right: 12px; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -82,15 +123,15 @@
   <div id="app">
     <div id="hud">
       <div class="players">
-        <div class="who" id="meRow"><span class="tag">You</span>
-          <span class="stat" id="meLives" title="Lives: robots that reach your exit cost 1 (2 while sealed)">❤ <b id="lives"></b><small>lives</small></span>
-          <span class="stat" title="Gold to spend">⚙ <b id="gold"></b><small>gold</small></span>
-          <span class="stat" title="Income: paid every 5 s, +1 for every 10 gold of robots you send">▲ <b id="income"></b><small id="incomeSub">/10s</small></span>
+        <div class="who" id="meRow"><span class="tag">YOU</span>
+          <span class="stat" id="meLives" title="Lives: robots that reach your exit cost 1 (2 while sealed)"><b id="lives"></b><small>lives</small></span>
+          <span class="stat" title="Gold to spend"><b id="gold"></b><small>gold</small></span>
+          <span class="stat" title="Income: paid every 5 s, +1 for every 10 gold of robots you send"><b id="income"></b><small id="incomeSub">/10s</small></span>
         </div>
-        <div class="who bot"><span class="tag">Bot</span>
-          <span class="stat" id="botLives">❤ <b id="olives"></b><small>lives</small></span>
-          <span class="stat">⚙ <b id="ogold"></b><small>gold</small></span>
-          <span class="stat">▲ <b id="oincome"></b><small>/5s</small></span>
+        <div class="who bot"><span class="tag">BOT</span>
+          <span class="stat" id="botLives"><b id="olives"></b><small>lives</small></span>
+          <span class="stat"><b id="ogold"></b><small>gold</small></span>
+          <span class="stat"><b id="oincome"></b><small>/5s</small></span>
         </div>
       </div>
       <div class="side">
@@ -102,9 +143,9 @@
     <div id="lane"><div id="banner" hidden></div><div id="toast" hidden></div></div>
     <div id="panel">
       <div id="tabs">
-        <button data-tab="build" class="on">Build</button>
-        <button data-tab="send">Send</button>
-        <button data-tab="factories">Factories</button>
+        <button data-tab="build" class="on">BUILD</button>
+        <button data-tab="send">SEND</button>
+        <button data-tab="factories">FACTORIES</button>
       </div>
       <div id="body"></div>
     </div>
@@ -112,11 +153,12 @@
 
   <div id="menu" class="screen">
     <div class="card">
-      <h1>Cog<span>Rush</span></h1>
+      <h1>COG<span>/</span>RUSH</h1>
+      <p class="label">Robot lane wars</p>
       <p>Maze your lane. Send robots into theirs.<br />Last one with lives wins.</p>
       <button data-diff="easy" class="alt">Easy bot</button>
       <button data-diff="normal">Normal bot</button>
-      <button data-diff="hard" class="danger">Hard bot</button>
+      <button data-diff="hard" class="alt">Hard bot</button>
       <details class="help">
         <summary>How to play</summary>
         <p><b>Build:</b> tap a cell, pick a tower. Every tower is also a wall: robots take the shortest open path, so make it long. Drag across cells to build a whole row.</p>
@@ -133,8 +175,8 @@
     <div class="card" style="max-width:420px">
       <h2 style="margin:0 0 8px">How to play</h2>
       <div class="help">
-        <p><b>Lives</b> ❤: every robot reaching your exit costs 1 (2 while your lane is sealed). 0 lives = you lose.</p>
-        <p><b>Income</b> ▲: paid every 5 s (green bar under the stats). Every 10 gold of robots you send adds +1 for the rest of the match. Income freezes while your lane is sealed.</p>
+        <p><b>Lives</b>: every robot reaching your exit costs 1 (2 while your lane is sealed). 0 lives = you lose.</p>
+        <p><b>Income</b>: paid every 5 s (the striped bar under the stats). Every 10 gold of robots you send adds +1 for the rest of the match. Income freezes while your lane is sealed.</p>
         <p><b>Build</b>: tap a cell and pick a tower, or drag across cells to build a row of the tower picked in the Build tab. Robots take the shortest open path, so make it long.</p>
         <p><b>Counter</b>: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.</p>
       </div>
@@ -150,7 +192,7 @@
         <tr><td><kbd>P</kbd></td><td>Pause</td></tr>
         <tr><td><kbd>H</kbd> / <kbd>?</kbd></td><td>This help</td></tr>
       </table>
-      <button id="helpClose" class="go" style="margin-top:12px">Back to the game</button>
+      <button id="helpClose" style="margin-top:12px">Back to the game</button>
     </div>
   </div>
 
@@ -159,7 +201,7 @@
       <h1 id="endTitle"></h1>
       <p id="endSub"></p>
       <table id="endStats"></table>
-      <button id="again" class="go">Rematch</button>
+      <button id="again">Rematch</button>
       <button id="toMenu" class="alt">Menu</button>
     </div>
   </div>
