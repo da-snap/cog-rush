@@ -318,7 +318,14 @@ addEventListener('keydown', e => {
   else if (k === 's' && t) act('sell')
   else if ('qwertyui'.includes(k) && k.length === 1) act('load', ROBOT_KINDS['qwertyui'.indexOf(k)])
   else if (k === ' ') { e.preventDefault(); act('release') }
-  else if (k === 'escape') { if (!$('helpScreen').hidden) toggleHelp(); else { sel = null; renderPanel(true) } }
+  else if (k === 'escape') {
+    if (!$('helpScreen').hidden) toggleHelp()
+    else if (drag) { // cancel the row being dragged: nothing gets built
+      const n = drag.cells.length
+      drag = null
+      if (n > 1) toast(`Row cancelled (${n} towers)`)
+    } else { sel = null; renderPanel(true) }
+  }
   else if (k === 'p') togglePause()
 })
 
