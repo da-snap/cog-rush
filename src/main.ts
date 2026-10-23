@@ -310,6 +310,9 @@ addEventListener('keydown', e => {
   if (!g || e.repeat) return
   const L = g.lanes[ME], k = e.key.toLowerCase()
   const t = sel && L.towers[sel.y * COLS + sel.x]
+  // a direct shortcut also jumps to its tab, so you see what it did
+  const tabFor = k >= '1' && k <= '6' || ((k === 'u' || k === 'a' || k === 'b' || k === 's') && t) ? 'build' : 'qwertyui '.includes(k) && k.length === 1 ? 'send' : k === 'f' ? 'factories' : null
+  if (tabFor && tabFor !== tab) { tab = tabFor; view = ME; renderPanel(true) }
   if (k === 'h' || k === '?') toggleHelp()
   else if (k >= '1' && k <= '6' && sel && !t) act('build', TOWER_KINDS[+k - 1])
   else if (k >= '1' && k <= '6' && !sel) act('rowKind', TOWER_KINDS[+k - 1])
