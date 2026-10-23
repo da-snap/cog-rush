@@ -44,6 +44,7 @@
     @keyframes hit { 0%, 60% { color: var(--rogue); transform: scale(1.15); } }
     .frozen { color: var(--rogue) !important; }
     .side { display: flex; align-items: center; gap: 8px; }
+    @media (max-width: 420px) { .stat small[data-s] { font-size: 0; margin-left: 2px; } .stat small[data-s]::after { content: attr(data-s); font-size: 10px; } .who { gap: 8px; overflow: hidden; } .stat b { font-size: 15px; } .stat small { font-size: 10px; } #clock { font-size: 13px; } .side { gap: 4px; } }
     .side .btns { display: flex; gap: 4px; }
     #clock { font: 800 15px var(--display); }
     .amber { color: var(--hazard); }
@@ -124,14 +125,14 @@
     <div id="hud">
       <div class="players">
         <div class="who" id="meRow"><span class="tag">YOU</span>
-          <span class="stat" id="meLives" title="Lives: robots that reach your exit cost 1 (2 while sealed)"><b id="lives"></b><small>lives</small></span>
-          <span class="stat" title="Gold to spend"><b id="gold"></b><small>gold</small></span>
-          <span class="stat" title="Income: paid every 5 s, +1 for every 10 gold of robots you send"><b id="income"></b><small id="incomeSub">/10s</small></span>
+          <span class="stat" id="meLives" title="Lives: robots that reach your exit cost 1 (2 while sealed)"><b id="lives"></b><small data-s="hp">lives</small></span>
+          <span class="stat" title="Gold to spend"><b id="gold"></b><small data-s="g">gold</small></span>
+          <span class="stat" title="Income: paid every 5 s, +1 for every 10 gold of robots you send"><b id="income"></b><small id="incomeSub" data-s=""></small></span>
         </div>
         <div class="who bot"><span class="tag">BOT</span>
-          <span class="stat" id="botLives"><b id="olives"></b><small>lives</small></span>
-          <span class="stat"><b id="ogold"></b><small>gold</small></span>
-          <span class="stat"><b id="oincome"></b><small>/5s</small></span>
+          <span class="stat" id="botLives"><b id="olives"></b><small data-s="hp">lives</small></span>
+          <span class="stat"><b id="ogold"></b><small data-s="g">gold</small></span>
+          <span class="stat"><b id="oincome"></b><small data-s="/5s">/5s</small></span>
         </div>
       </div>
       <div class="side">
@@ -161,7 +162,7 @@
       <button data-diff="hard" class="alt">Hard bot</button>
       <details class="help">
         <summary>How to play</summary>
-        <p><b>Build:</b> tap a cell, pick a tower. Every tower is also a wall: robots take the shortest open path, so make it long. Drag across cells to build a whole row.</p>
+        <p><b>Build:</b> pick a tower, then tap a cell for one or drag for a row. The tower stays picked until you stop building. Every tower is also a wall: robots take the shortest open path, so make it long.</p>
         <p><b>Don't seal the lane:</b> if no path is left, robots go berserk and blast through (Breach mode), your income freezes and leaks cost double.</p>
         <p><b>Send:</b> load robots, then Release. Every robot you send raises your income for the rest of the match. The bot sees your wave 4 s before it lands, and you see theirs.</p>
         <p><b>Counter:</b> Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded. Factories unlock robots; you only get 4 slots.</p>
@@ -177,18 +178,18 @@
       <div class="help">
         <p><b>Lives</b>: every robot reaching your exit costs 1 (2 while your lane is sealed). 0 lives = you lose.</p>
         <p><b>Income</b>: paid every 5 s (the striped bar under the stats). Every 10 gold of robots you send adds +1 for the rest of the match. Income freezes while your lane is sealed.</p>
-        <p><b>Build</b>: tap a cell and pick a tower, or drag across cells to build a row of the tower picked in the Build tab. Robots take the shortest open path, so make it long.</p>
+        <p><b>Build</b>: pick a tower (1–6 or the Build tab), then click a cell for one tower or click and drag for a row. The tower stays picked; stop with Esc, right-click or <b>Stop building</b>. Click a placed tower to upgrade or sell it.</p>
         <p><b>Counter</b>: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.</p>
       </div>
       <table class="keys">
-        <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Build that tower on the selected cell (with no cell selected: pick the row type)</td></tr>
+        <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Pick a tower to build (Gatling, Flak, EMP, Mortar, Tesla, Laser)</td></tr>
         <tr><td><kbd>U</kbd></td><td>Upgrade the selected tower</td></tr>
         <tr><td><kbd>A</kbd> / <kbd>B</kbd></td><td>Pick level 3 branch A or B</td></tr>
         <tr><td><kbd>S</kbd></td><td>Sell the selected tower</td></tr>
         <tr><td><kbd>Q</kbd>–<kbd>I</kbd></td><td>Load Scout, Drone, Repair, Shield, Tank, Splitter, Breaker, Colossus</td></tr>
         <tr><td><kbd>Space</kbd></td><td>Release your wave</td></tr>
         <tr><td><kbd>F</kbd></td><td>Factories tab (the keys above also jump to their tab)</td></tr>
-        <tr><td><kbd>Esc</kbd></td><td>Cancel the row you're dragging, or deselect</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Cancel the row you're dragging, else deselect the tower, else stop building (right-click works too)</td></tr>
         <tr><td><kbd>P</kbd></td><td>Pause</td></tr>
         <tr><td><kbd>H</kbd> / <kbd>?</kbd></td><td>This help</td></tr>
       </table>

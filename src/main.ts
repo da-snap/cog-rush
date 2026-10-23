@@ -57,7 +57,9 @@ let view = ME // which lane is shown big on a phone
 let prev = new Map<number, { x: number; y: number }>()
 let fx: Fx[] = []
 let drag: { cells: number[]; last: number } | null = null
-let rowKind: TowerKind = 'gatling' // what a drag builds
+let buildKind: TowerKind | null = null // build mode: picked tower, stays picked until cancelled
+let hover: { x: number; y: number } | null = null // cell under the mouse, for the build preview
+let sealArmed = -1 // a cell that would seal the lane needs a second click
 let toastUntil = 0
 
 // --- match flow --------------------------------------------------------------
@@ -139,28 +141,38 @@ const hit = (v: View, px: number, py: number) => {
 const localXY = (e: PointerEvent) => { const r = app.canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top] }
 const mainLane = () => (layout().side ? ME : view)
 
+const cellAt = (e: PointerEvent) => { const [px, py] = localXY(e); return hit(layout().main, px, py) }
+
 app.canvas.addEventListener('pointerdown', e => {
-  if (!g) return
+  if (!g || e.button === 2) return
   const [px, py] = localXY(e)
-  const { main, mini, side } = layout()
+  const { mini, side } = layout()
   if ((mini && hit(mini, px, py)) || (side && hit(side, px, py))) { // tap the other lane: swap views on a phone
     if (mini) { view = 1 - view; sel = null; renderPanel(true) }
     return
   }
-  const c = hit(main, px, py)
+  const c = cellAt(e)
   if (!c || mainLane() !== ME) return
   const L = g.lanes[ME], i = c.y * COLS + c.x
-  if (buildable(c.x, c.y) && !L.towers[i]) {
-    drag = { cells: [i], last: i }
-    app.canvas.setPointerCapture(e.pointerId)
-  } else tap(c)
+  hover = c
+  if (L.towers[i]) { // an existing tower: select it for upgrade / sell
+    sel = sel && sel.x === c.x && sel.y === c.y ? null : c
+    tab = 'build'
+    return renderPanel(true)
+  }
+  sel = null
+  if (!buildKind) { toast('Pick a tower first (1–6)'); tab = 'build'; return renderPanel(true) }
+  if (!buildable(c.x, c.y)) { toast('Spawn and exit rows are not buildable'); return renderPanel(true) }
+  drag = { cells: [i], last: i }
+  app.canvas.setPointerCapture(e.pointerId)
+  renderPanel(true)
 })
 
 app.canvas.addEventListener('pointermove', e => {
-  if (!drag || !g) return
-  const [px, py] = localXY(e)
-  const c = hit(layout().main, px, py)
-  if (!c) return
+  if (!g) return
+  const c = cellAt(e)
+  hover = c && mainLane() === ME ? c : null
+  if (!drag || !c) return
   const i = c.y * COLS + c.x
   if (i === drag.last) return
   // walk cell by cell from the last cell so fast swipes don't skip
@@ -172,32 +184,52 @@ app.canvas.addEventListener('pointermove', e => {
   }
   drag.last = i
 })
+app.canvas.addEventListener('pointerleave', () => { hover = null })
+// right click leaves build mode on desktop
+app.canvas.addEventListener('contextmenu', e => { e.preventDefault(); if (drag) cancelDrag(); else stopBuilding() })
 
 app.canvas.addEventListener('pointerup', () => {
-  if (!drag || !g) return
-  const cells = drag.cells
+  if (!drag || !g || !buildKind) return
+  const cells = drag.cells, kind = buildKind
   drag = null
-  if (cells.length === 1) return tap({ x: cells[0] % COLS, y: Math.floor(cells[0] / COLS) })
-  // quick row: the picked tower type along the drag, skipping any cell that would seal the lane
-  const L = g.lanes[ME], towers = L.towers.slice(), cost = TOWERS[rowKind].cost
+  const L = g.lanes[ME], cost = TOWERS[kind].cost
+  if (cells.length === 1) { // one click = one tower; sealing the lane needs a second click on the same cell
+    const i = cells[0], x = i % COLS, y = Math.floor(i / COLS)
+    const why = canBuild(L, x, y, kind)
+    if (why) { toast(why); sealArmed = -1; return }
+    if (wouldSeal(L, x, y) && sealArmed !== i) { sealArmed = i; toast('This seals your lane! Click again to build anyway', 2500); return }
+    sealArmed = -1
+    pending.push({ p: ME, t: 'build', x, y, kind })
+    return
+  }
+  // a row: the picked tower along the drag, skipping any cell that would seal the lane
+  const towers = L.towers.slice()
   let gold = L.gold, built = 0, skipped = 0
   for (const i of cells) {
     const x = i % COLS, y = Math.floor(i / COLS)
     if (gold < cost) break
-    if (canBuild(L, x, y, rowKind) || wouldSeal(L, x, y, towers)) { skipped++; continue }
-    towers[i] = { kind: rowKind } as Tower
+    if (canBuild(L, x, y, kind) || wouldSeal(L, x, y, towers)) { skipped++; continue }
+    towers[i] = { kind } as Tower
     gold -= cost
-    pending.push({ p: ME, t: 'build', x, y, kind: rowKind })
+    pending.push({ p: ME, t: 'build', x, y, kind })
     built++
   }
-  sel = null
-  toast(`Row: ${built} ${TOWERS[rowKind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${gold < cost && built < cells.length - skipped ? ', out of gold' : ''}`)
-  renderPanel(true)
+  toast(`Row: ${built} ${TOWERS[kind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${gold < cost && built < cells.length - skipped ? ', out of gold' : ''}`)
 })
 
-function tap(c: { x: number; y: number }) {
-  sel = sel && sel.x === c.x && sel.y === c.y ? null : c
-  tab = 'build'
+function cancelDrag() {
+  if (!drag) return
+  const n = drag.cells.length
+  drag = null
+  if (n > 1) toast(`Row cancelled (${n} towers)`)
+}
+function pickTower(k: TowerKind, toggle = true) {
+  buildKind = toggle && buildKind === k ? null : k
+  sel = null; sealArmed = -1; tab = 'build'; view = ME
+  renderPanel(true)
+}
+function stopBuilding() {
+  buildKind = null; sealArmed = -1
   renderPanel(true)
 }
 
@@ -222,7 +254,8 @@ function act(a: string, arg?: string) {
     case 'load': pending.push({ p: ME, t: 'load', kind: arg as RobotKind }); break
     case 'release': pending.push({ p: ME, t: 'release' }); break
     case 'pickFactory': selFactory = arg as RobotKind; break
-    case 'rowKind': rowKind = arg as TowerKind; break
+    case 'pick': return pickTower(arg as TowerKind)
+    case 'stop': return stopBuilding()
     case 'factory': pending.push({ p: ME, t: 'factory', kind: selFactory }); break
     case 'demolish': pending.push({ p: ME, t: 'demolish', kind: selFactory }); break
   }
@@ -245,19 +278,15 @@ const btn = (act: string, label: string, opts: { arg?: string; sub?: string; cls
   `${opts.icon ? `<span class="ic">${opts.icon}</span>` : ''}${label}${opts.key ? `<kbd>${opts.key}</kbd>` : ''}${opts.sub ? `<small>${opts.sub}</small>` : ''}</button>`
 
 function buildHtml(g: Game, L: Lane): string {
-  if (!sel) {
-    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>' : `Tap a cell to build · drag for a row of <b style="color:${hex(C.hazard)}">${TOWERS[rowKind].name}</b>`
-    return `<div class="info">${msg}</div><div class="grid six">` +
-      TOWER_KINDS.map((k, i) => `<button data-act="rowKind" data-arg="${k}" class="pick ${k === rowKind ? 'sel' : ''}"><span class="ic">${svgIcon(TOWER_ICON[k], towerColor(k), 20)}</span>${TOWERS[k].name}<span class="cost">${TOWERS[k].cost}g</span><kbd>${i + 1}</kbd></button>`).join('') +
-      '</div>' + legend()
-  }
-  const t = L.towers[sel.y * COLS + sel.x]
+  const t = sel && L.towers[sel.y * COLS + sel.x]
   if (!t) {
-    const why = canBuild(L, sel.x, sel.y, 'gatling')
-    if (why && why !== 'Not enough gold') return `<div class="info warn">${why}</div>`
-    const seals = wouldSeal(L, sel.x, sel.y)
-    return `<div class="info ${seals ? 'warn' : ''}">${seals ? 'This seals your lane! Robots will breach it.' : 'Pick a tower for this cell.'}</div><div class="grid">` +
-      TOWER_KINDS.map((k, i) => btn('build', TOWERS[k].name, { arg: k, key: String(i + 1), sub: `<span class="cost">${TOWERS[k].cost}g</span> ${dmgTag(k)}`, cls: seals ? 'tile seal' : 'tile', off: L.gold < TOWERS[k].cost, icon: svgIcon(TOWER_ICON[k], towerColor(k)) })).join('') + '</div>'
+    const k = buildKind
+    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>'
+      : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · click for one, drag for a row`
+      : 'Pick a tower to build · click a placed tower to upgrade or sell'
+    return `<div class="info">${msg}</div><div class="grid six">` +
+      TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost">${TOWERS[x].cost}g</span><kbd>${i + 1}</kbd></button>`).join('') +
+      '</div>' + (k ? `<div class="row" style="margin-top:6px">${btn('stop', 'Stop building', { cls: 'alt', key: 'Esc' })}</div>` : legend())
   }
   const st = towerStats(t), d = TOWERS[t.kind]
   const branch = t.branch ? d.branches.find(b => b.key === t.branch)!.name : ''
@@ -320,20 +349,18 @@ addEventListener('keydown', e => {
   const tabFor = k >= '1' && k <= '6' || ((k === 'u' || k === 'a' || k === 'b' || k === 's') && t) ? 'build' : 'qwertyui '.includes(k) && k.length === 1 ? 'send' : k === 'f' ? 'factories' : null
   if (tabFor && tabFor !== tab) { tab = tabFor; view = ME; renderPanel(true) }
   if (k === 'h' || k === '?') toggleHelp()
-  else if (k >= '1' && k <= '6' && sel && !t) act('build', TOWER_KINDS[+k - 1])
-  else if (k >= '1' && k <= '6' && !sel) act('rowKind', TOWER_KINDS[+k - 1])
+  else if (k >= '1' && k <= '6') pickTower(TOWER_KINDS[+k - 1], false)
   else if (k === 'u' && t) act('upgrade')
   else if ((k === 'a' || k === 'b') && t && t.level === 2) act('upgrade', TOWERS[t.kind].branches[k === 'a' ? 0 : 1].key)
   else if (k === 's' && t) act('sell')
   else if ('qwertyui'.includes(k) && k.length === 1) act('load', ROBOT_KINDS['qwertyui'.indexOf(k)])
   else if (k === ' ') { e.preventDefault(); act('release') }
   else if (k === 'escape') {
+    // one layer per press: help, then a row being dragged, then a selected tower, then build mode
     if (!$('helpScreen').hidden) toggleHelp()
-    else if (drag) { // cancel the row being dragged: nothing gets built
-      const n = drag.cells.length
-      drag = null
-      if (n > 1) toast(`Row cancelled (${n} towers)`)
-    } else { sel = null; renderPanel(true) }
+    else if (drag) cancelDrag()
+    else if (sel) { sel = null; renderPanel(true) }
+    else stopBuilding()
   }
   else if (k === 'p') togglePause()
 })
@@ -347,7 +374,9 @@ function hud(g: Game) {
   $('lives').textContent = String(L.lives)
   $('gold').textContent = String(L.gold)
   $('income').textContent = `+${L.income}`
-  $('incomeSub').textContent = L.sealed ? 'frozen!' : `in ${Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))}s`
+  const nextPay = Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))
+  $('incomeSub').textContent = L.sealed ? 'frozen!' : `in ${nextPay}s`
+  $('incomeSub').dataset.s = L.sealed ? 'frozen' : `${nextPay}s`
   $('income').classList.toggle('frozen', L.sealed)
   $('tickFill').style.width = `${(t % INCOME_EVERY_S) / INCOME_EVERY_S * 100}%`
   $('tick').classList.toggle('frozen', L.sealed)
@@ -412,8 +441,10 @@ app.ticker.add(t => {
       me: ME,
       alpha, prev, now, mini: d.mini,
       fx: d.mini ? [] : fx.filter(f => f.p === d.L.p),
-      sel: mine ? sel : null, preview: mine && sel && !d.L.towers[sel.y * COLS + sel.x] && tab === 'build' ? 'gatling' : null,
-      drag: mine && drag && drag.cells.length > 1 ? drag.cells : [], dragKind: rowKind,
+      // selected tower, else the build preview under the mouse (or the cell being pressed on touch)
+      sel: !mine ? null : sel ?? (buildKind && hover && !drag && !d.L.towers[hover.y * COLS + hover.x] && buildable(hover.x, hover.y) ? hover : null),
+      preview: mine && !sel && !drag ? buildKind : null,
+      drag: mine && drag ? drag.cells : [], dragKind: buildKind ?? 'gatling',
     })
   }
   if (mini) gfx.rect(mini.x - 1, mini.y - 1, mini.cell * COLS + 2, mini.cell * ROWS + 2).stroke({ width: 1, color: big === ME ? C.rogue : C.hazard })
