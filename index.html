@@ -24,10 +24,13 @@
     }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     html, body { margin: 0; height: 100%; background: var(--void); color: var(--white); font: 14px/1.35 var(--ui); overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; font-variant-numeric: tabular-nums; }
-    #app { display: flex; flex-direction: column; height: 100dvh; max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 8px env(safe-area-inset-bottom); }
+    #world { position: fixed; inset: 0; width: 100vw; height: 100dvh; display: block; z-index: 0; }
+    #app { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100dvh; max-width: 1100px; margin: 0 auto; padding: env(safe-area-inset-top) 8px env(safe-area-inset-bottom); pointer-events: none; }
+    #hud, #tick, #panel, #lane { pointer-events: auto; }
+    .glass { background: rgba(20, 23, 28, .78); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
 
     /* HUD */
-    #hud { display: flex; gap: 8px; align-items: center; padding: 6px 0 4px; white-space: nowrap; }
+    #hud { display: flex; gap: 8px; align-items: center; padding: 8px 10px 6px; margin: 6px 0 0; white-space: nowrap; clip-path: var(--cut-m); }
     .players { flex: 1; display: grid; gap: 4px; min-width: 0; }
     .who { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
     .tag { font-weight: 700; font-size: 11px; letter-spacing: .1em; padding: 2px 6px; align-self: center; }
@@ -48,7 +51,7 @@
     .side .btns { display: flex; gap: 4px; }
     #clock { font: 800 15px var(--display); }
     .amber { color: var(--hazard); }
-    #tick { height: 4px; background: var(--groove); margin: 2px 0 6px; overflow: hidden; }
+    #tick { height: 4px; background: rgba(32,37,44,.8); margin: 4px 0 0; overflow: hidden; }
     #tickFill { height: 100%; width: 0; background: repeating-linear-gradient(90deg, var(--hazard) 0 10px, var(--hazard-deep) 10px 12px); }
     #tick.frozen #tickFill { background: var(--rogue); }
 
@@ -59,7 +62,8 @@
     #toast { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: var(--plate); border: 1px solid var(--seam2); padding: 6px 12px; font-size: 13px; pointer-events: none; white-space: nowrap; z-index: 2; clip-path: var(--cut-s); }
 
     /* mode tabs */
-    #panel { padding: 4px 0 8px; }
+    #panel { padding: 8px 8px 8px; margin-bottom: 6px; clip-path: var(--cut-m); }
+    #lane { touch-action: none; }
     #tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }
     #tabs button { min-height: 44px; background: var(--hull); color: var(--dust); border: 0; border-bottom: 3px solid transparent; clip-path: none; font-weight: 700; letter-spacing: .06em; display: flex; align-items: center; justify-content: center; gap: 6px; }
     #tabs button.on { background: var(--plate); color: var(--white); border-bottom-color: var(--hazard); }
@@ -100,7 +104,15 @@
     @media (hover: none) and (pointer: coarse) { button kbd { display: none; } }
 
     /* screens */
-    .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(11, 13, 16, .96); z-index: 10; padding: 24px; overflow: auto; }
+    .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at center, rgba(11,13,16,.55), rgba(11,13,16,.92)); z-index: 10; padding: 24px; overflow: auto; }
+    #menu { background: linear-gradient(rgba(11,13,16,.2), rgba(11,13,16,.75) 60%, rgba(11,13,16,.95)); }
+    .card { animation: rise .35s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(16px); } }
+    .card h1 { text-shadow: 0 0 24px rgba(255,196,46,.35); }
+    #toast { animation: pop .2s ease-out; }
+    @keyframes pop { from { transform: translateX(-50%) scale(.9); opacity: 0; } }
+    #banner:not([hidden]) { animation: pop .2s ease-out, blink 1s steps(2) infinite .2s; }
+    @keyframes blink { 50% { filter: brightness(1.3); } }
     .card { max-width: 380px; width: 100%; text-align: center; }
     .card h1 { font: 800 44px/1 var(--display); letter-spacing: -.02em; margin: 0 0 10px; }
     .card h1 span { color: var(--hazard); }
@@ -117,12 +129,14 @@
     .keys { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
     .keys td { padding: 5px 2px; border-bottom: 1px solid var(--groove); color: var(--white); text-align: left !important; font-weight: 400 !important; }
     .keys td:first-child { white-space: nowrap; width: 1%; padding-right: 12px; }
+    body.menu #app { visibility: hidden; }
     [hidden] { display: none !important; }
   </style>
 </head>
-<body>
+<body class="menu">
+  <canvas id="world"></canvas>
   <div id="app">
-    <div id="hud">
+    <div id="hud" class="glass">
       <div class="players">
         <div class="who" id="meRow"><span class="tag">YOU</span>
           <span class="stat" id="meLives" title="Lives: robots that reach your exit cost 1 (2 while sealed)"><b id="lives"></b><small data-s="hp">lives</small></span>
@@ -137,12 +151,12 @@
       </div>
       <div class="side">
         <span id="clock"></span>
-        <div class="btns"><button id="help" class="ghost" aria-label="Help">?</button><button id="pause" class="ghost" aria-label="Pause">II</button></div>
+        <div class="btns"><button id="mute" class="ghost" aria-label="Sound on or off"></button><button id="help" class="ghost" aria-label="Help">?</button><button id="pause" class="ghost" aria-label="Pause">II</button></div>
       </div>
     </div>
     <div id="tick" title="Next income payout"><div id="tickFill"></div></div>
     <div id="lane"><div id="banner" hidden></div><div id="toast" hidden></div></div>
-    <div id="panel">
+    <div id="panel" class="glass">
       <div id="tabs">
         <button data-tab="build" class="on">BUILD</button>
         <button data-tab="send">SEND</button>
@@ -168,6 +182,7 @@
         <p><b>Counter:</b> Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded. Factories unlock robots; you only get 4 slots.</p>
         <p><b>Keys:</b> press <b>H</b> in a match for the full list.</p>
       </details>
+      <button id="menuMute" class="ghost" aria-label="Sound on or off" style="width:44px;margin:12px auto 0"></button>
     </div>
   </div>
 

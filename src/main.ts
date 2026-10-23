@@ -1,4 +1,5 @@
-import { Application, Graphics } from 'pixi.js'
+import { Scene3D, type UiState } from './scene3d.ts'
+import * as sfx from './audio.ts'
 import {
   COLS, FACTORY, INCOME_EVERY_S, ROBOTS, ROBOT_KINDS, ROWS, SEND, SUDDEN, TICK_HZ, TOWERS, TOWER_KINDS,
   type RobotKind, type TowerKind,
@@ -8,7 +9,7 @@ import {
   slotsUsed, step, towerStats, upgradeCost, waveCap, wouldSeal, type Cmd, type Game, type Lane, type Tower,
 } from './sim/sim.ts'
 import { DIFFICULTY, botThink, newMem, type BotMem, type Strategy } from './sim/bot.ts'
-import { C, ROBOT_ICON, TOWER_ICON, drawLane, hex, robotColor, svgIcon, towerColor, type Fx, type View } from './render.ts'
+import { C, ROBOT_ICON, TOWER_ICON, hex, robotColor, svgIcon, towerColor } from './ui.ts'
 
 const TOWER_ROLE: Record<TowerKind, string> = {
   gatling: 'Cheap single target · Kinetic · ground + air',
@@ -37,12 +38,10 @@ const PLAY = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
 const laneEl = $('lane'), body = $('body'), banner = $('banner'), toastEl = $('toast')
 
-const app = new Application()
-await app.init({ resizeTo: laneEl, background: 0x0d1117, antialias: true, resolution: devicePixelRatio, autoDensity: true })
-laneEl.prepend(app.canvas)
-new ResizeObserver(() => app.resize()).observe(laneEl)
-const gfx = new Graphics()
-app.stage.addChild(gfx)
+const canvas = $<HTMLCanvasElement>('world')
+const world = new Scene3D(canvas)
+const size = () => { world.resize(innerWidth, innerHeight) }
+addEventListener('resize', size); size()
 
 const ME = 0, BOT = 1
 let g: Game | null = null
@@ -55,7 +54,6 @@ let sel: { x: number; y: number } | null = null
 let selFactory: RobotKind = 'scout'
 let view = ME // which lane is shown big on a phone
 let prev = new Map<number, { x: number; y: number }>()
-let fx: Fx[] = []
 let drag: { cells: number[]; last: number } | null = null
 let buildKind: TowerKind | null = null // build mode: picked tower, stays picked until cancelled
 let hover: { x: number; y: number } | null = null // cell under the mouse, for the build preview
@@ -68,8 +66,10 @@ function start(d: keyof typeof DIFFICULTY) {
   diff = d
   g = newGame()
   bot = { st: DIFFICULTY[d], mem: newMem() }
-  pending = []; sel = null; view = ME; paused = false; lastLives = [20, 20]; fx = []; prev.clear(); tab = 'build'
+  pending = []; sel = null; view = ME; paused = false; lastLives = [20, 20]; prev.clear(); tab = 'build'; buildKind = null; demo = null
+  sfx.unlockAudio(); sfx.setIntense(false); sfx.startMusic(); sfx.horn()
   $('menu').hidden = true
+  document.body.classList.remove('menu')
   $('end').hidden = true
   $('pause').innerHTML = PAUSE
   toast('Prep phase: build your maze!', 3000)
@@ -89,12 +89,25 @@ function end(game: Game) {
   ]
   $('endStats').innerHTML = `<tr><td></td><td>You</td><td>Bot</td></tr>` + rows.map(([n, f]) => `<tr><td>${n}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`).join('')
   $('end').hidden = false
+  sfx.stopMusic(); sfx.stinger(won)
+  world.shake(won ? 0.2 : 0.6)
 }
 
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-diff]')) b.onclick = () => start(b.dataset.diff as keyof typeof DIFFICULTY)
 $('again').onclick = () => start(diff)
-$('toMenu').onclick = () => { $('end').hidden = true; $('menu').hidden = false; g = null }
+$('toMenu').onclick = () => { $('end').hidden = true; $('menu').hidden = false; document.body.classList.add('menu'); g = null; startDemo() }
 $('pause').onclick = () => togglePause()
+const MUTE = (m: boolean) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/>${m ? '<path d="M17 9l5 6M22 9l-5 6"/>' : '<path d="M17 8a5 5 0 0 1 0 8M19.5 5.5a9 9 0 0 1 0 13"/>'}</svg>`
+for (const id of ['mute', 'menuMute']) {
+  const b = $(id)
+  b.innerHTML = MUTE(sfx.isMuted())
+  b.onclick = () => { sfx.unlockAudio(); const m = sfx.toggleMute(); for (const x of ['mute', 'menuMute']) $(x).innerHTML = MUTE(m) }
+}
+
+// attract mode: two bots play behind the title screen
+let demo: { g: Game; mems: BotMem[] } | null = null
+function startDemo() { demo = { g: newGame(), mems: [newMem(), newMem()] } }
+startDemo()
 function togglePause() {
   if (!g || g.winner !== -1) return
   paused = !paused
@@ -122,53 +135,49 @@ function toast(text: string, ms = 1800) {
 
 // --- layout and input ----------------------------------------------------------
 
-function layout(): { main: View; mini: View | null; side: View | null } {
-  const w = app.screen.width, h = app.screen.height
-  if (w >= h * 1.1) { // tablet landscape / desktop: both lanes side by side
-    const cell = Math.floor(Math.min((w - 24) / (COLS * 2), h / ROWS))
-    const x = Math.floor((w - cell * COLS * 2 - 24) / 2)
-    return { main: { x, y: 0, cell }, mini: null, side: { x: x + cell * COLS + 24, y: 0, cell } }
+const wide = () => innerWidth >= innerHeight * 1.1 // tablet landscape / desktop: both lanes side by side
+const mainLane = () => (wide() ? ME : view)
+const demoUi = (): UiState => ({ me: -1, focus: 0, layout: 'both', free: { x: 0, y: 0, w: innerWidth, h: innerHeight }, mini: null, sel: null, hover: null, buildKind: null, drag: [] })
+function uiState(): UiState {
+  const r = laneEl.getBoundingClientRect()
+  const mw = Math.round(Math.min(90, r.width * 0.17)), mh = Math.round(mw * 20 / 11.6)
+  // phone: the other lane is a mini-map in the top-right corner, where the far end of the board leaves room
+  const free = { x: r.left, y: r.top, w: r.width, h: r.height }
+  return {
+    me: ME, focus: mainLane(), layout: wide() ? 'both' : 'single', free,
+    mini: wide() ? null : { x: Math.round(r.right - mw - 2), y: Math.round(r.top + 8), w: mw, h: mh },
+    sel, hover: buildKind && !sel ? hover : null, buildKind: sel ? null : buildKind, drag: drag ? drag.cells : [],
   }
-  const cell = Math.floor(Math.min((w - 50) / COLS, h / ROWS))
-  const x = Math.floor((w - cell * COLS - 50) / 2), mx = x + cell * COLS + 6
-  return { main: { x, y: 0, cell }, mini: { x: mx, y: 0, cell: Math.min(6, Math.floor((w - mx) / COLS)) }, side: null }
+}
+/** pointer -> cell of my lane (null elsewhere) */
+const cellAt = (e: PointerEvent) => {
+  const c = world.pick(e.clientX, e.clientY, innerWidth, innerHeight)
+  return c && c.lane === ME && mainLane() === ME ? { x: c.x, y: c.y } : null
 }
 
-const hit = (v: View, px: number, py: number) => {
-  const x = Math.floor((px - v.x) / v.cell), y = Math.floor((py - v.y) / v.cell)
-  return x >= 0 && x < COLS && y >= 0 && y < ROWS ? { x, y } : null
-}
-const localXY = (e: PointerEvent) => { const r = app.canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top] }
-const mainLane = () => (layout().side ? ME : view)
-
-const cellAt = (e: PointerEvent) => { const [px, py] = localXY(e); return hit(layout().main, px, py) }
-
-app.canvas.addEventListener('pointerdown', e => {
+laneEl.addEventListener('pointerdown', e => {
+  sfx.unlockAudio()
   if (!g || e.button === 2) return
-  const [px, py] = localXY(e)
-  const { mini, side } = layout()
-  if ((mini && hit(mini, px, py)) || (side && hit(side, px, py))) { // tap the other lane: swap views on a phone
-    if (mini) { view = 1 - view; sel = null; renderPanel(true) }
-    return
-  }
+  if (world.inMini(e.clientX, e.clientY, uiState())) { view = 1 - view; sel = null; sfx.click(); renderPanel(true); return }
   const c = cellAt(e)
-  if (!c || mainLane() !== ME) return
+  if (!c) return
   const L = g.lanes[ME], i = c.y * COLS + c.x
   hover = c
   if (L.towers[i]) { // an existing tower: select it for upgrade / sell
     sel = sel && sel.x === c.x && sel.y === c.y ? null : c
     tab = 'build'
+    sfx.click()
     return renderPanel(true)
   }
   sel = null
-  if (!buildKind) { toast('Pick a tower first (1–6)'); tab = 'build'; return renderPanel(true) }
-  if (!buildable(c.x, c.y)) { toast('Spawn and exit rows are not buildable'); return renderPanel(true) }
+  if (!buildKind) { toast('Pick a tower first (1–6)'); sfx.deny(); tab = 'build'; return renderPanel(true) }
+  if (!buildable(c.x, c.y)) { toast('Spawn and exit rows are not buildable'); sfx.deny(); return renderPanel(true) }
   drag = { cells: [i], last: i }
-  app.canvas.setPointerCapture(e.pointerId)
+  laneEl.setPointerCapture(e.pointerId)
   renderPanel(true)
 })
 
-app.canvas.addEventListener('pointermove', e => {
+laneEl.addEventListener('pointermove', e => {
   if (!g) return
   const c = cellAt(e)
   hover = c && mainLane() === ME ? c : null
@@ -184,11 +193,11 @@ app.canvas.addEventListener('pointermove', e => {
   }
   drag.last = i
 })
-app.canvas.addEventListener('pointerleave', () => { hover = null })
+laneEl.addEventListener('pointerleave', () => { if (!drag) hover = null })
 // right click leaves build mode on desktop
-app.canvas.addEventListener('contextmenu', e => { e.preventDefault(); if (drag) cancelDrag(); else stopBuilding() })
+laneEl.addEventListener('contextmenu', e => { e.preventDefault(); if (drag) cancelDrag(); else stopBuilding() })
 
-app.canvas.addEventListener('pointerup', () => {
+laneEl.addEventListener('pointerup', () => {
   if (!drag || !g || !buildKind) return
   const cells = drag.cells, kind = buildKind
   drag = null
@@ -196,7 +205,7 @@ app.canvas.addEventListener('pointerup', () => {
   if (cells.length === 1) { // one click = one tower; sealing the lane needs a second click on the same cell
     const i = cells[0], x = i % COLS, y = Math.floor(i / COLS)
     const why = canBuild(L, x, y, kind)
-    if (why) { toast(why); sealArmed = -1; return }
+    if (why) { toast(why); sfx.deny(); sealArmed = -1; return }
     if (wouldSeal(L, x, y) && sealArmed !== i) { sealArmed = i; toast('This seals your lane! Click again to build anyway', 2500); return }
     sealArmed = -1
     pending.push({ p: ME, t: 'build', x, y, kind })
@@ -248,15 +257,14 @@ function act(a: string, arg?: string) {
   if (!g) return
   const L = g.lanes[ME]
   switch (a) {
-    case 'build': if (sel && !canBuild(L, sel.x, sel.y, arg as TowerKind)) pending.push({ p: ME, t: 'build', x: sel.x, y: sel.y, kind: arg as TowerKind }); break
-    case 'upgrade': if (sel) pending.push({ p: ME, t: 'upgrade', x: sel.x, y: sel.y, branch: arg }); break
-    case 'sell': if (sel) { pending.push({ p: ME, t: 'sell', x: sel.x, y: sel.y }); sel = null } break
-    case 'load': pending.push({ p: ME, t: 'load', kind: arg as RobotKind }); break
-    case 'release': pending.push({ p: ME, t: 'release' }); break
-    case 'pickFactory': selFactory = arg as RobotKind; break
+    case 'upgrade': if (sel) { const ok = !canUpgrade(L, sel.x, sel.y, arg); if (ok) { pending.push({ p: ME, t: 'upgrade', x: sel.x, y: sel.y, branch: arg }); sfx.upgrade() } else sfx.deny() } break
+    case 'sell': if (sel) { pending.push({ p: ME, t: 'sell', x: sel.x, y: sel.y }); sel = null; sfx.sell() } break
+    case 'load': if (canLoad(g, L, arg as RobotKind)) sfx.deny(); else { pending.push({ p: ME, t: 'load', kind: arg as RobotKind }); sfx.click() } break
+    case 'release': if (canRelease(g, L)) sfx.deny(); else { pending.push({ p: ME, t: 'release' }); sfx.release() } break
+    case 'pickFactory': selFactory = arg as RobotKind; sfx.click(); break
     case 'pick': return pickTower(arg as TowerKind)
     case 'stop': return stopBuilding()
-    case 'factory': pending.push({ p: ME, t: 'factory', kind: selFactory }); break
+    case 'factory': if (canFactory(L, selFactory)) sfx.deny(); else { pending.push({ p: ME, t: 'factory', kind: selFactory }); sfx.upgrade() } break
     case 'demolish': pending.push({ p: ME, t: 'demolish', kind: selFactory }); break
   }
   renderPanel(true)
@@ -400,14 +408,30 @@ function hud(g: Game) {
   } else banner.hidden = true
 }
 
-let acc = 0
+let acc = 0, lastFrame = performance.now()
 const DT = 1000 / TICK_HZ
-app.ticker.add(t => {
-  const now = performance.now()
+function frame(now: number) {
+  requestAnimationFrame(frame)
+  const dtMs = Math.min(100, now - lastFrame)
+  lastFrame = now
   if (toastUntil && now > toastUntil) { toastEl.hidden = true; toastUntil = 0 }
-  if (!g) return gfx.clear()
+  if (!g) {
+    if (!demo) return world.renderer.clear()
+    acc = Math.min(acc + dtMs, DT * 10)
+    while (acc >= DT) {
+      acc -= DT
+      const d = demo.g
+      prev = new Map(d.lanes.flatMap(L => L.robots.map(r => [r.id, { x: r.x, y: r.y }] as const)))
+      step(d, [0, 1].flatMap(p => botThink(d, p, DIFFICULTY.hard, demo!.mems[p])))
+      world.onStep(d, demoUi(), true)
+      if (d.winner !== -1 || d.tick > 9 * 60 * TICK_HZ) startDemo()
+    }
+    world.render(demo.g, demoUi(), acc / DT, prev, dtMs / 1000, innerWidth, innerHeight)
+    return
+  }
+  const ui = uiState()
   const running = !paused && g.winner === -1
-  if (running) acc = Math.min(acc + t.deltaMS, DT * 10) // don't spiral after a background tab
+  if (running) acc = Math.min(acc + dtMs, DT * 10) // don't spiral after a background tab
   let stepped = false
   while (running && acc >= DT) {
     acc -= DT
@@ -416,39 +440,26 @@ app.ticker.add(t => {
     step(g, [...pending, ...botThink(g, BOT, bot!.st, bot!.mem)])
     pending = []
     stepped = true
-    for (const e of g.events) {
-      if (e.t === 'fx') fx.push({ ...e, until: now + (e.k === 'beam' ? 60 : e.k === 'line' ? 90 : 220) })
-      if (e.t === 'wave' && e.p === ME) toast(secs(g) >= SUDDEN.fromS ? `Sudden death wave ${e.n + 1}!` : `Neutral wave ${e.n + 1}`)
-    }
-    if (!wasSealed && g.lanes[ME].sealed) toast('Lane sealed! Breach mode', 2500)
+    world.onStep(g, ui)
+    for (const e of g.events) if (e.t === 'wave' && e.p === ME) toast(secs(g) >= SUDDEN.fromS ? `Sudden death wave ${e.n + 1}!` : `Neutral wave ${e.n + 1}`)
+    if (!wasSealed && g.lanes[ME].sealed) { toast('Lane sealed! Breach mode', 2500); sfx.alarm() }
     if (g.tick === SEND.prepS * TICK_HZ) toast('Sending unlocked!')
-    if (g.tick === SUDDEN.fromS * TICK_HZ) toast('Sudden death: waves every 15 s', 3000)
+    if (g.tick === SUDDEN.fromS * TICK_HZ) { toast('Sudden death: waves every 15 s', 3000); sfx.setIntense(true) }
     if (g.winner !== -1) { end(g); break }
   }
   if (stepped) { hud(g); renderPanel() }
-  fx = fx.filter(f => f.until > now)
+  world.render(g, ui, running ? acc / DT : 1, prev, dtMs / 1000, innerWidth, innerHeight)
+  adapt(dtMs)
+}
 
-  gfx.clear()
-  const { main, mini, side } = layout()
-  const alpha = running ? acc / DT : 1
-  const big = mainLane()
-  const drawn = [{ L: g.lanes[big], v: main, mini: false }]
-  if (side) drawn.push({ L: g.lanes[1 - big], v: side, mini: false })
-  if (mini) drawn.push({ L: g.lanes[1 - big], v: mini, mini: true })
-  for (const d of drawn) {
-    const mine = d.L.p === ME
-    drawLane(gfx, d.L, d.v, {
-      me: ME,
-      alpha, prev, now, mini: d.mini,
-      fx: d.mini ? [] : fx.filter(f => f.p === d.L.p),
-      // selected tower, else the build preview under the mouse (or the cell being pressed on touch)
-      sel: !mine ? null : sel ?? (buildKind && hover && !drag && !d.L.towers[hover.y * COLS + hover.x] && buildable(hover.x, hover.y) ? hover : null),
-      preview: mine && !sel && !drag ? buildKind : null,
-      drag: mine && drag ? drag.cells : [], dragKind: buildKind ?? 'gatling',
-    })
-  }
-  if (mini) gfx.rect(mini.x - 1, mini.y - 1, mini.cell * COLS + 2, mini.cell * ROWS + 2).stroke({ width: 1, color: big === ME ? C.rogue : C.hazard })
-})
+// slow device? drop the render resolution step by step (never below 1x CSS pixels)
+let slowFrames = 0
+function adapt(dtMs: number) {
+  slowFrames = dtMs > 28 ? slowFrames + 1 : Math.max(0, slowFrames - 1)
+  const pr = world.renderer.getPixelRatio()
+  if (slowFrames > 90 && pr > 1) { world.renderer.setPixelRatio(Math.max(1, pr - 0.5)); size(); slowFrames = 0 }
+}
+requestAnimationFrame(frame)
 
 // ?play=easy|normal|hard skips the menu
 const q = new URLSearchParams(location.search).get('play')
@@ -457,7 +468,7 @@ if (q && q in DIFFICULTY) start(q as keyof typeof DIFFICULTY)
 if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js')
 // dev console hook: game() returns live state
 if (import.meta.env.DEV) Object.assign(window, {
-  game: () => g, cmd: (c: Cmd) => pending.push(c),
+  game: () => g, cmd: (c: Cmd) => pending.push(c), world,
   // ff(seconds, true) fast-forwards with a Normal bot playing for you too
   ff: (s: number, auto = false) => { const me = newMem(); for (let i = 0; i < s * TICK_HZ && g && g.winner === -1; i++) { step(g, [...pending, ...(auto ? botThink(g, ME, DIFFICULTY.normal, me) : []), ...botThink(g, BOT, bot!.st, bot!.mem)]); pending = [] } if (g) { hud(g); renderPanel(true); if (g.winner !== -1) end(g) } },
 })
