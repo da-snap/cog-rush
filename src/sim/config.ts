@@ -9,10 +9,10 @@ export const ROWS = 20
 export const SPAWN_ROWS = 2 // rows 0..1
 export const EXIT_ROWS = 2 // rows 18..19
 
-export const START_GOLD = 250
+export const START_GOLD = 175 // fun plan 2026-11-09: thinner minute-1 maze so early sends can hurt
 export const START_INCOME = 10
 export const INCOME_EVERY_S = 5 // Daniel 2026-10-22: halved from the GDD's 10 s
-export const LIVES = 20
+export const LIVES = 100 // fun plan: core HP; a leak costs ROBOTS[kind].leak (x2 while sealed)
 export const SELL_REFUND_PCT = 75
 
 export const WAVE_EVERY_S = 30
@@ -94,19 +94,20 @@ export const BRANCH = {
 export type RobotKind = 'scout' | 'drone' | 'repair' | 'shield' | 'tank' | 'splitter' | 'breaker' | 'colossus'
 export interface RobotDef {
   name: string; armor: Armor; air: boolean; hp: number; speedMcPerS: number
-  sendCost: number; income: number; buildS: number; maxWave: number; factoryCost: number
+  sendCost: number; buildS: number; maxWave: number; factoryCost: number
+  leak: number // core damage when it reaches the exit
   towerDps: number // open design gap 1: placeholder damage vs towers (Breach multiplies by 3)
 }
 // balance vs GDD: Scout 60→40 HP, Drone 120→90, Tank 400→480, Breaker 300→360 (speed decides exposure in a maze)
 export const ROBOTS: Record<RobotKind, RobotDef> = {
-  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, income: 1, buildS: 1, maxWave: 12, factoryCost: 0, towerDps: 10 },
-  drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, income: 2, buildS: 3, maxWave: 6, factoryCost: 120, towerDps: 0 },
-  repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, income: 3, buildS: 4, maxWave: 3, factoryCost: 150, towerDps: 10 },
-  shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, income: 3, buildS: 4, maxWave: 3, factoryCost: 150, towerDps: 10 },
-  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 480, speedMcPerS: 800, sendCost: 40, income: 4, buildS: 5, maxWave: 4, factoryCost: 150, towerDps: 10 },
-  splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, income: 4, buildS: 5, maxWave: 3, factoryCost: 180, towerDps: 10 },
-  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 360, speedMcPerS: 900, sendCost: 50, income: 5, buildS: 6, maxWave: 3, factoryCost: 200, towerDps: 20 },
-  colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, income: 30, buildS: 30, maxWave: 1, factoryCost: 400, towerDps: 40 },
+  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, buildS: 1, maxWave: 12, factoryCost: 0, leak: 1, towerDps: 10 },
+  drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, buildS: 3, maxWave: 6, factoryCost: 120, leak: 2, towerDps: 0 },
+  repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10 },
+  shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10 },
+  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 400, speedMcPerS: 800, sendCost: 40, buildS: 5, maxWave: 4, factoryCost: 150, leak: 4, towerDps: 10 },
+  splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, buildS: 5, maxWave: 3, factoryCost: 180, leak: 3, towerDps: 10 },
+  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 300, speedMcPerS: 900, sendCost: 50, buildS: 6, maxWave: 3, factoryCost: 200, leak: 4, towerDps: 20 },
+  colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, buildS: 30, maxWave: 1, factoryCost: 400, leak: 15, towerDps: 40 },
 }
 export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 
@@ -118,19 +119,22 @@ export const FACTORY = {
   upgradeCostMult: [1, 2], // default: L2 = 1x factory cost, L3 = 2x (like towers)
   scoutUpgradeCost: 100, // default: Scout factory has no build cost to scale from
   hpPctPerLevel: 25,
+  buildPctByLevel: [100, 75, 50], // fun plan: upgraded factories build faster
   waveCapPctPerLevel: 50, // default: max per wave +50% per level
 }
 export const SEND = {
   prepS: 20,
   hpPct: 200, // balance: sent robots get 2x the GDD HP (neutrals use the base table)
-  hpGrowthPctPerMin: 45, // balance: sent robots gain HP over the match (compounding per minute), so sends stay relevant late
+  hpGrowthPctPerMin: 10, hpGrowthPctPerMin2: 20, // fun plan: linear, not compounding (45%/min compounding made a 10:00 Scout tougher than a Colossus)
+  goldPerIncome: 25, // +1 income per 15 gold of robots released
+  burstMin: 6, burstShieldPct: 30, // Overdrive: a release of 6+ robots spawns with a 30% shield
   previewS: 4,
   gapTicks: 10, // 0.5 s between robots of a released wave
   bountyPct: 25, // to the defender, also for neutral kills (default for gap 2)
-  leakPct: 50, // to the sender
+  leakPct: 30, // to the sender
   colossusFromS: 300, // default: gate is on sending
 }
-export const SUDDEN = { fromS: 600, everyS: 15, hpGrowthPct: 30 }
+export const SUDDEN = { fromS: 480, everyS: 15, hpGrowthPct: 60 }
 
 // ponytail: fixed 4-wave neutral cycle, "small and predictable", one extra Scout every 4 waves.
 export function neutralWave(n: number): RobotKind[] {

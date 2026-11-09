@@ -1,14 +1,14 @@
 import { Scene3D, type UiState } from './scene3d.ts'
 import * as sfx from './audio.ts'
 import {
-  COLS, FACTORY, INCOME_EVERY_S, ROBOTS, ROBOT_KINDS, ROWS, SEND, SUDDEN, TICK_HZ, TOWERS, TOWER_KINDS,
+  ARMOR_MULT_PCT, COLS, FACTORY, INCOME_EVERY_S, LIVES, ROBOTS, ROBOT_KINDS, ROWS, SEND, SUDDEN, TICK_HZ, TOWERS, TOWER_KINDS,
   type RobotKind, type TowerKind,
 } from './sim/config.ts'
 import {
   buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, newGame, readyCount, secs, sellValue,
   slotsUsed, step, towerStats, upgradeCost, waveCap, wouldSeal, type Cmd, type Game, type Lane, type Tower,
 } from './sim/sim.ts'
-import { DIFFICULTY, botThink, newMem, type BotMem, type Strategy } from './sim/bot.ts'
+import { DIFFICULTY, RIVALS, botThink, newMem, radar, type BotMem, type Strategy, type Threat } from './sim/bot.ts'
 import { C, ROBOT_ICON, TOWER_ICON, hex, robotColor, svgIcon, towerColor } from './ui.ts'
 
 const TOWER_ROLE: Record<TowerKind, string> = {
@@ -65,25 +65,63 @@ let toastUntil = 0
 
 // --- match flow --------------------------------------------------------------
 
+// what kind of local match is running: a plain bot, a ladder rival, or today's challenge
+type Mode = { kind: 'bot' } | { kind: 'ladder'; i: number } | { kind: 'daily'; day: number; i: number; mod: number }
+let mode: Mode = { kind: 'bot' }
+const store = { get: (k: string) => { try { return localStorage.getItem('cogrush.' + k) } catch { return null } }, set: (k: string, v: string) => { try { localStorage.setItem('cogrush.' + k, v) } catch { /* private mode */ } } }
+const ladderBeaten = () => Number(store.get('ladder') ?? -1)
+
+// daily challenge: same rival and rule for everyone on a given day
+const MODS: { name: string; desc: string; apply: (g: Game) => void }[] = [
+  { name: 'Gold rush', desc: 'Both start with 500 gold', apply: g => { for (const L of g.lanes) L.gold = 500 } },
+  { name: 'Glass core', desc: 'Both cores have only 40 HP', apply: g => { for (const L of g.lanes) L.lives = 40 } },
+  { name: 'Drone day', desc: 'Both start with a Drone factory', apply: g => { for (const L of g.lanes) L.factories.drone = 1 } },
+  { name: 'Underdog', desc: 'You start with 300 gold, the rival with +10 income', apply: g => { g.lanes[ME].gold = 300; g.lanes[OPP].income += 10 } },
+]
+const today = () => Math.floor(Date.now() / 86_400_000)
+const daily = (day: number) => ({ day, i: 2 + (day * 5) % (RIVALS.length - 2), mod: day % MODS.length })
+
 function start(d: keyof typeof DIFFICULTY) {
   diff = d
+  play(DIFFICULTY[d], { kind: 'bot' })
+}
+function play(st: Strategy, m: Mode) {
   closeNet()
   ME = 0; OPP = 1
-  bot = { st: DIFFICULTY[d], mem: newMem() }
+  mode = m
+  bot = { st, mem: newMem() }
+  replay = null
   begin()
+  if (m.kind === 'daily') { MODS[m.mod].apply(g!); toast(`Daily: ${MODS[m.mod].name}. ${MODS[m.mod].desc}`, 4000) }
+}
+
+// recording: every command by tick (replays), plus lives and income every 5 s (post-match graph)
+let rec = { log: new Map<number, Cmd[]>(), lives: [[] as number[], [] as number[]], income: [[] as number[], [] as number[]], lost: [new Map<RobotKind, number>(), new Map<RobotKind, number>()] }
+let replay: { log: Map<number, Cmd[]> } | null = null
+function startReplay() {
+  const log = rec.log
+  replay = { log }
+  const st = bot?.st
+  begin()
+  if (mode.kind === 'daily') MODS[mode.mod].apply(g!)
+  replay = { log }
+  bot = st ? { st, mem: newMem() } : null
+  toast('Replay at 4x speed. Esc or Menu to leave', 3000)
 }
 
 function begin() {
   g = newGame()
   for (const id of ['botTag', 'oppView']) { const el = document.getElementById(id); if (el) el.textContent = rival().toUpperCase() }
   $('pause').hidden = !!net
-  pending = []; sel = null; view = ME; paused = false; lastLives = [20, 20]; prev.clear(); tab = 'build'; buildKind = null; demo = null
+  if (!replay) rec = { log: new Map(), lives: [[LIVES], [LIVES]], income: [[0], [0]], lost: [new Map(), new Map()] }
+  pending = []; sel = null; view = ME; paused = false; lastLives = [LIVES, LIVES]; prev.clear(); tab = 'build'; buildKind = null; demo = null
   sfx.unlockAudio(); sfx.setIntense(false); sfx.startMusic(); sfx.horn()
   $('menu').hidden = true
   document.body.classList.remove('menu')
   $('end').hidden = true
   $('pause').innerHTML = PAUSE
   toast('Prep phase: build your maze!', 3000)
+  if (!replay && !net && !store.get('hinted')) { hints = true; store.set('hinted', '1') }
   renderPanel(true)
 }
 
@@ -91,22 +129,36 @@ function end(game: Game) {
   const won = game.winner === ME, draw = game.winner === -2
   $('endTitle').textContent = draw ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT'
   $('endTitle').style.color = hex(draw ? C.white : won ? C.hazard : C.rogue)
-  $('endSub').textContent = `${net ? 'LAN match' : DIFFICULTY[diff].name + ' bot'} · ${clock(secs(game))}`
+  const who = net ? 'LAN match' : mode.kind === 'ladder' ? `Ladder: ${RIVALS[mode.i].name}` : mode.kind === 'daily' ? `Daily: ${MODS[mode.mod].name} vs ${RIVALS[mode.i].name}` : DIFFICULTY[diff].name + ' bot'
+  $('endSub').textContent = `${replay ? 'Replay · ' : ''}${who} · ${clock(secs(game))}`
+  $('endReport').innerHTML = replay ? '' : report(game, won) + livesChart()
+  if (!replay && won && mode.kind === 'ladder' && mode.i > ladderBeaten()) {
+    store.set('ladder', String(mode.i))
+    $('endReport').innerHTML += `<p class="amber">${mode.i + 1 < RIVALS.length ? `Next rival unlocked: <b>${RIVALS[mode.i + 1].name}</b>` : 'You beat the whole ladder!'}</p>`
+  }
+  if (!replay && won && mode.kind === 'daily') {
+    const best = Number(store.get('daily' + mode.day) ?? 1e9), t = Math.floor(secs(game))
+    if (t < best) store.set('daily' + mode.day, String(t))
+    $('endReport').innerHTML += `<p class="amber">${t < best ? 'New best for today' : `Today's best: ${clock(best)}`}</p>`
+  }
+  $('next').hidden = !(won && mode.kind === 'ladder' && mode.i + 1 < RIVALS.length) || !!net
+  $('watch').hidden = !!net
   const a = game.lanes[ME], b = game.lanes[OPP]
   const rows: [string, (L: Lane) => string | number][] = [
-    ['Lives left', L => L.lives], ['Robots killed', L => L.stats.kills], ['Robots sent', L => L.stats.sent],
+    ['Core HP left', L => L.lives], ['Robots killed', L => L.stats.kills], ['Robots sent', L => L.stats.sent],
     ['Leaks taken', L => L.stats.leaksTaken], ['Income', L => `+${L.income}`],
     ['Gold on towers', L => L.stats.towerGold], ['Gold on sends', L => L.stats.sendGold],
   ]
   $('endStats').innerHTML = `<tr><td></td><td>You</td><td>${rival()}</td></tr>` + rows.map(([n, f]) => `<tr><td>${n}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`).join('')
   $('end').hidden = false
+  replay = null
   sfx.stopMusic(); sfx.stinger(won)
   world.shake(won ? 0.2 : 0.6)
 }
 
 for (const b of document.querySelectorAll<HTMLButtonElement>('[data-diff]')) b.onclick = () => start(b.dataset.diff as keyof typeof DIFFICULTY)
 $('again').onclick = () => {
-  if (!net) return start(diff)
+  if (!net) return mode.kind === 'bot' ? start(diff) : play(bot!.st, mode)
   net.ws.send(JSON.stringify({ t: 'rematch' }))
   lobby('Waiting for your rival to accept the rematch…')
 }
@@ -127,7 +179,8 @@ function closeNet() {
 }
 function toMenu() {
   closeNet()
-  $('end').hidden = true; $('lobby').hidden = true; $('menu').hidden = false
+  replay = null
+  $('end').hidden = true; $('lobby').hidden = true; $('ladder').hidden = true; $('menu').hidden = false
   document.body.classList.add('menu'); g = null; startDemo(); sfx.stopMusic()
 }
 $('lanBtn').onclick = () => {
@@ -150,6 +203,17 @@ $('lanBtn').onclick = () => {
   ws.onclose = () => { if (net?.ws === ws) { net = null; g = null; lobby('No LAN server here. Start one with "npm run lan" on one computer and open the address it prints on both devices.') } }
 }
 $('lobbyCancel').onclick = toMenu
+$('watch').onclick = () => { $('end').hidden = true; startReplay() }
+$('next').onclick = () => { if (mode.kind === 'ladder') play(RIVALS[mode.i + 1].st, { kind: 'ladder', i: mode.i + 1 }) }
+$('ladderBtn').onclick = () => { renderLadder(); $('menu').hidden = true; $('ladder').hidden = false }
+$('ladderBack').onclick = () => { $('ladder').hidden = true; $('menu').hidden = false }
+function renderLadder() {
+  const beaten = ladderBeaten(), d = daily(today()), best = store.get('daily' + d.day)
+  $('rivals').innerHTML = RIVALS.map((r, i) => `<button data-rival="${i}" class="${i <= beaten ? 'alt' : ''}" ${i > beaten + 1 ? 'disabled' : ''}>${i + 1}. ${r.name}${i <= beaten ? ' ✓' : ''}<small>${i > beaten + 1 ? 'locked' : r.blurb}</small></button>`).join('') +
+    `<p class="label" style="margin-top:14px">Daily challenge</p><button id="dailyBtn">${MODS[d.mod].name} vs ${RIVALS[d.i].name}<small>${MODS[d.mod].desc}${best ? ` · your best ${clock(+best)}` : ''}</small></button>`
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-rival]')) b.onclick = () => { $('ladder').hidden = true; const i = +b.dataset.rival!; play(RIVALS[i].st, { kind: 'ladder', i }) }
+  $('dailyBtn').onclick = () => { $('ladder').hidden = true; play(RIVALS[d.i].st, { kind: 'daily', ...d }) }
+}
 $('toMenu').onclick = toMenu
 $('pause').onclick = () => togglePause()
 const MUTE = (m: boolean) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/>${m ? '<path d="M17 9l5 6M22 9l-5 6"/>' : '<path d="M17 8a5 5 0 0 1 0 8M19.5 5.5a9 9 0 0 1 0 13"/>'}</svg>`
@@ -344,12 +408,12 @@ function buildHtml(g: Game, L: Lane): string {
   const t = sel && L.towers[sel.y * COLS + sel.x]
   if (!t) {
     const k = buildKind
-    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost 2 lives.</span>'
+    const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost double.</span>'
       : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · click for one, drag for a row`
       : 'Pick a tower to build · click a placed tower to upgrade or sell'
     return `<div class="info">${msg}</div><div class="grid six">` +
       TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost">${TOWERS[x].cost}g</span><kbd>${i + 1}</kbd></button>`).join('') +
-      '</div>' + (k ? `<div class="row" style="margin-top:6px">${btn('stop', 'Stop building', { cls: 'alt', key: 'Esc' })}</div>` : legend())
+      '</div>' + (k ? `<div class="row" style="margin-top:6px">${btn('stop', 'Stop building', { cls: 'alt', key: 'Esc' })}</div>` : radarHtml(L, 'Your defense'))
   }
   const st = towerStats(t), d = TOWERS[t.kind]
   const branch = t.branch ? d.branches.find(b => b.key === t.branch)!.name : ''
@@ -361,7 +425,14 @@ function buildHtml(g: Game, L: Lane): string {
   return `<div class="info">${info}</div><div class="info">${TOWER_ROLE[t.kind]}</div><div class="row">${up}${btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt', key: 'S' })}</div>`
 }
 
-const legend = () => `<div class="info" style="font-size:12px">Kinetic beats <b>Light</b> · Explosive beats <b>Heavy</b> · Energy beats <b>Shielded</b></div>`
+// threat radar: how much damage this lane does to each armor type, so a hole shows before it's punished
+const THREATS: [Threat, string][] = [['light', 'LIGHT'], ['heavy', 'HEAVY'], ['shielded', 'SHIELD'], ['air', 'AIR']]
+const BEST: Record<Threat, string> = { light: 'Kinetic', heavy: 'Explosive', shielded: 'Energy', air: 'Flak' }
+function radarHtml(L: Lane, title: string) {
+  const r = radar(L), weak = THREATS.map(([k]) => k).sort((a, b) => r[a] - r[b])[0]
+  const any = r.light + r.heavy + r.shielded + r.air > 0
+  return `<div class="radar"><span>${title}</span>` + THREATS.map(([k, n]) => `<i class="${any && k === weak ? 'weak' : ''}" title="${BEST[k]} beats ${n.toLowerCase()}"><b style="width:${Math.max(4, r[k])}%"></b>${n}</i>`).join('') + '</div>'
+}
 
 function sendHtml(g: Game, L: Lane): string {
   const ready = readyCount(L), building = L.queue.length - ready
@@ -396,8 +467,8 @@ function factoryHtml(L: Lane): string {
 function opponentHtml(g: Game, L: Lane): string {
   const facts = ROBOT_KINDS.filter(k => L.factories[k]).map(k => `${ROBOTS[k].name} L${L.factories[k]}`).join(', ')
   const towers = L.towers.filter(Boolean).length
-  return `<div class="info"><b class="warn">${rival().toUpperCase()} LANE</b> · ${L.lives} lives · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
-    `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${L.queue.length} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
+  return `<div class="info"><b class="warn">${rival().toUpperCase()} LANE</b> · ${L.lives} HP · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
+    radarHtml(L, 'Their defense') + `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${L.queue.length} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
     `<div class="row">${btn('back', 'Back to my lane', { cls: 'alt' })}</div>`
 }
 body.addEventListener('pointerdown', e => { if ((e.target as HTMLElement).closest('[data-act="back"]')) { view = ME; renderPanel(true) } })
@@ -420,7 +491,8 @@ addEventListener('keydown', e => {
   else if (k === ' ') { e.preventDefault(); act('release') }
   else if (k === 'escape') {
     // one layer per press: help, then a row being dragged, then a selected tower, then build mode
-    if (!$('helpScreen').hidden) toggleHelp()
+    if (replay) toMenu()
+    else if (!$('helpScreen').hidden) toggleHelp()
     else if (drag) cancelDrag()
     else if (sel) { sel = null; renderPanel(true) }
     else stopBuilding()
@@ -428,10 +500,46 @@ addEventListener('keydown', e => {
   else if (k === 'p') togglePause()
 })
 
+// --- post-match report -----------------------------------------------------------
+
+/** step the sim and record it (commands for replays, damage and 5 s samples for the report) */
+function recStep(game: Game, cmds: Cmd[]) {
+  if (replay) return step(game, cmds)
+  if (cmds.length) rec.log.set(game.tick, cmds)
+  step(game, cmds)
+  for (const e of game.events) if (e.t === 'leak') rec.lost[e.p].set(e.kind, (rec.lost[e.p].get(e.kind) ?? 0) + e.dmg)
+  if (game.tick % (INCOME_EVERY_S * TICK_HZ) === 0) game.lanes.forEach((L, i) => { rec.lives[i].push(L.lives); rec.income[i].push(L.income) })
+}
+
+function report(game: Game, won: boolean): string {
+  const lost = (p: number) => [...rec.lost[p]].sort((a, b) => b[1] - a[1])
+  const mine = lost(ME), theirs = lost(OPP)
+  const big = won ? theirs[0] : mine[0]
+  let head = ''
+  if (big) {
+    const k = big[0], a: Threat = ROBOTS[k].air ? 'air' : ROBOTS[k].armor
+    head = won ? `Your ${ROBOTS[k].name}s did the most damage: ${big[1]} HP.`
+      : `You lost ${big[1]} HP to ${ROBOTS[k].name}s (${a}). ${BEST[a]} beats them${radar(game.lanes[ME])[a] < 40 ? ', and you had little of it' : ''}.`
+  }
+  const row = (m: [RobotKind, number][]) => m.length ? m.map(([k, n]) => `${short(k)} ${n}`).join(' · ') : 'nothing'
+  return `${head ? `<p><b>${head}</b></p>` : ''}<p class="small">Damage taken · you: ${row(mine)}<br>${rival()}: ${row(theirs)}</p>`
+}
+
+// lives (solid) and income (dashed) for both players over the match, from the 5 s samples
+function livesChart(): string {
+  const w = 300, h = 90, n = Math.max(2, rec.lives[0].length), maxInc = Math.max(1, ...rec.income.flat())
+  const line = (v: number[], max: number) => v.map((y, i) => `${(i / (n - 1) * w).toFixed(1)},${(h - y / max * h).toFixed(1)}`).join(' ')
+  const col = [hex(C.hazard), hex(C.rogue)]
+  return `<svg viewBox="-2 -2 ${w + 4} ${h + 4}" class="chart" role="img" aria-label="Core HP and income over the match">` +
+    [ME, OPP].map(p => `<polyline points="${line(rec.income[p], maxInc)}" fill="none" stroke="${col[p === ME ? 0 : 1]}" stroke-width="1" stroke-dasharray="3 3" opacity=".6"/><polyline points="${line(rec.lives[p], LIVES)}" fill="none" stroke="${col[p === ME ? 0 : 1]}" stroke-width="2"/>`).join('') +
+    `</svg><p class="small"><span class="amber">You</span> vs <span class="warn">${rival()}</span> · solid: core HP · dashed: income</p>`
+}
+
 // --- loop ----------------------------------------------------------------------
 
 const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 let lastLives = [0, 0]
+let hints = false
 function hud(g: Game) {
   const L = g.lanes[ME], O = g.lanes[OPP], t = secs(g)
   $('lives').textContent = String(L.lives)
@@ -448,7 +556,7 @@ function hud(g: Game) {
   $('oincome').textContent = `+${O.income}`
   g.lanes.forEach((x, i) => {
     const el = $(i === ME ? 'meLives' : 'botLives')
-    el.classList.toggle('low', x.lives <= 5)
+    el.classList.toggle('low', x.lives <= LIVES / 4)
     if (x.lives < lastLives[i]) { el.classList.remove('hit'); void el.offsetWidth; el.classList.add('hit') }
     lastLives[i] = x.lives
   })
@@ -457,7 +565,12 @@ function hud(g: Game) {
   if (inc) {
     const counts = new Map<RobotKind, number>()
     for (const r of inc.robots) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1)
-    banner.textContent = `${shown.p === ME ? 'INCOMING' : 'YOUR WAVE LANDS'} in ${Math.ceil((inc.at - g.tick) / TICK_HZ)}s: ` + [...counts].map(([k, n]) => `${n}× ${ROBOTS[k].name}`).join(', ')
+    // counter hint: what beats most of this wave
+    const by = new Map<string, number>()
+    for (const r of inc.robots) { const a = ROBOTS[r.kind].air ? 'air' : ROBOTS[r.kind].armor; by.set(a, (by.get(a) ?? 0) + ROBOTS[r.kind].sendCost) }
+    const main = [...by].sort((a, b) => b[1] - a[1])[0][0] as Threat
+    const burst = inc.robots.length >= SEND.burstMin ? ' · OVERDRIVE' : ''
+    banner.textContent = `${shown.p === ME ? 'INCOMING' : 'YOUR WAVE LANDS'} in ${Math.ceil((inc.at - g.tick) / TICK_HZ)}s: ` + [...counts].map(([k, n]) => `${n}× ${ROBOTS[k].name}`).join(', ') + burst + (shown.p === ME ? ` · ${BEST[main]} beats ${main === 'air' ? 'Drones' : main}` : '')
     banner.className = shown.p === ME ? '' : 'ours'
     banner.hidden = false
   } else banner.hidden = true
@@ -491,7 +604,7 @@ function frame(now: number) {
     const game = g!
     prev = new Map(game.lanes.flatMap(L => L.robots.map(r => [r.id, { x: r.x, y: r.y }] as const)))
     const wasSealed = game.lanes[ME].sealed
-    step(game, cmds)
+    recStep(game, cmds)
     stepped = true
     if (import.meta.env.DEV && game.tick % 100 === 0) ((window as unknown as { __h: Record<number, number> }).__h ??= {})[game.tick] = [...JSON.stringify(game.lanes)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
     world.onStep(game, ui)
@@ -505,11 +618,11 @@ function frame(now: number) {
     for (let k = 0; k < 20 && net.queue.length && g.winner === -1; k++) one(net.queue.shift()!.cmds)
     alpha = Math.min(1, (now - net.lastAt) / DT)
   } else {
-    if (running) acc = Math.min(acc + dtMs, DT * 10) // don't spiral after a background tab
+    if (running) acc = Math.min(acc + dtMs * (replay ? 4 : 1), DT * 40) // don't spiral after a background tab
     while (running && acc >= DT && g.winner === -1) {
       acc -= DT
-      one([...pending, ...botThink(g, OPP, bot!.st, bot!.mem)])
-      pending = []
+      if (replay) { pending = []; one(replay.log.get(g.tick) ?? []) }
+      else { one([...pending, ...botThink(g, OPP, bot!.st, bot!.mem)]); pending = [] }
     }
     alpha = running ? acc / DT : 1
   }
@@ -523,7 +636,9 @@ function after(g: Game, wasSealed: boolean) {
   {
     for (const e of g.events) if (e.t === 'wave' && e.p === ME) toast(secs(g) >= SUDDEN.fromS ? `Sudden death wave ${e.n + 1}!` : `Neutral wave ${e.n + 1}`)
     if (!wasSealed && g.lanes[ME].sealed) { toast('Lane sealed! Breach mode', 2500); sfx.alarm() }
-    if (g.tick === SEND.prepS * TICK_HZ) toast('Sending unlocked!')
+    if (g.tick === SEND.prepS * TICK_HZ) toast(hints ? 'Sending unlocked! Open SEND, load Scouts, press Release. Every robot you send raises your income.' : 'Sending unlocked!', hints ? 6000 : 1800)
+    if (hints && g.tick === 3 * TICK_HZ) toast('Pick a tower, then tap cells: robots take the shortest path, so make it long', 6000)
+    if (hints && g.tick === 70 * TICK_HZ) { toast('Watch the bars under BUILD: red is your weak armor type, and the bot will hit it', 6000); hints = false }
     if (g.tick === SUDDEN.fromS * TICK_HZ) { toast('Sudden death: waves every 15 s', 3000); sfx.setIntense(true) }
     if (g.winner !== -1) end(g)
   }
@@ -547,5 +662,5 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorke
 if (import.meta.env.DEV) Object.assign(window, {
   game: () => g, cmd: (c: Cmd) => pending.push(c), world,
   // ff(seconds, true) fast-forwards with a Normal bot playing for you too
-  ff: (s: number, auto = false) => { const me = newMem(); for (let i = 0; i < s * TICK_HZ && g && g.winner === -1; i++) { step(g, [...pending, ...(auto ? botThink(g, ME, DIFFICULTY.normal, me) : []), ...botThink(g, OPP, bot!.st, bot!.mem)]); pending = [] } if (g) { hud(g); renderPanel(true); if (g.winner !== -1) end(g) } },
+  ff: (s: number, auto = false) => { const me = newMem(); for (let i = 0; i < s * TICK_HZ && g && g.winner === -1; i++) { recStep(g, [...pending, ...(auto ? botThink(g, ME, DIFFICULTY.normal, me) : []), ...botThink(g, OPP, bot!.st, bot!.mem)]); pending = [] } if (g) { hud(g); renderPanel(true); if (g.winner !== -1) end(g) } },
 })

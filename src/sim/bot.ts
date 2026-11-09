@@ -19,9 +19,21 @@ export interface Strategy {
 
 export const DIFFICULTY: Record<'easy' | 'normal' | 'hard', Strategy> = {
   easy: { name: 'Easy', delay: 60, defense: 80, factories: ['tank'], burst: 1, counter: false, mazeTowers: 6 },
-  normal: { name: 'Normal', delay: 30, defense: 60, factories: ['tank', 'drone', 'shield'], burst: 4, counter: true, mazeTowers: 10 },
+  normal: { name: 'Normal', delay: 30, defense: 45, factories: ['tank', 'drone', 'shield'], burst: 4, counter: true, mazeTowers: 10 },
   hard: { name: 'Hard', delay: 10, defense: -1, factories: ['drone', 'tank', 'splitter', 'breaker'], burst: 8, counter: true, mazeTowers: 12 },
 }
+
+// Bot ladder: named rivals, each one a strategy with a clear counter, ordered from easy to hard.
+export const RIVALS: { name: string; blurb: string; st: Strategy }[] = [
+  { name: 'Sprocket', blurb: 'Trickles Tanks one by one. Learn to maze.', st: DIFFICULTY.easy },
+  { name: 'Ironside', blurb: 'Turtles behind a thick wall. Out-send it.', st: { name: 'Ironside', delay: 40, defense: 85, factories: ['tank', 'shield'], burst: 3, counter: true, mazeTowers: 12 } },
+  { name: 'Bolt', blurb: 'Floods you with Scouts. Kinetic beats Light.', st: { name: 'Bolt', delay: 35, defense: 55, factories: [], sends: ['scout'], burst: 12, counter: true, mazeTowers: 10 } },
+  { name: 'Skyhook', blurb: 'Drones fly over your maze. Build Flak.', st: { name: 'Skyhook', delay: 30, defense: 55, factories: ['drone'], sends: ['drone', 'scout'], burst: 6, counter: true, mazeTowers: 10 } },
+  { name: 'Hive', blurb: 'Splitters with Shield and Repair escorts. EMP jams them.', st: { name: 'Hive', delay: 25, defense: 55, factories: ['splitter', 'shield', 'repair'], sends: ['splitter', 'shield', 'repair', 'scout'], burst: 8, counter: true, mazeTowers: 10 } },
+  { name: 'Crusher', blurb: 'Tanks, Breakers, then a Colossus. Explosive beats Heavy.', st: { name: 'Crusher', delay: 20, defense: 55, factories: ['tank', 'breaker', 'colossus'], sends: ['tank', 'breaker', 'colossus'], burst: 5, counter: true, mazeTowers: 10 } },
+  { name: 'Blitz', blurb: 'All-in sender with a thin maze. Punish it, then race it.', st: { name: 'Blitz', delay: 15, defense: 35, factories: ['tank'], burst: 6, counter: true, mazeTowers: 6 } },
+  { name: 'Overmind', blurb: 'Reads your defense and hits the weakest spot.', st: { ...DIFFICULTY.hard, name: 'Overmind' } },
+]
 
 export interface BotMem { seen: Map<number, RobotKind>; armor: Record<Armor, number>; air: number; leaksAt: number[]; leaks: { at: number; kind: RobotKind }[]; lastRelease: number }
 export const newMem = (): BotMem => ({ seen: new Map(), armor: { light: 0, heavy: 0, shielded: 0 }, air: 0, leaksAt: [], leaks: [], lastRelease: 0 })
@@ -42,7 +54,7 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
   const cmds: Cmd[] = []
   const t = secs(g)
   const recentLeaks = mem.leaksAt.filter(x => x > g.tick - 30 * TICK_HZ).length
-  const share = st.defense >= 0 ? st.defense : Math.min(90, 45 + recentLeaks * 10 + (L.sealed ? 30 : 0))
+  const share = st.defense >= 0 ? st.defense : Math.min(85, 25 + recentLeaks * 8 + (L.sealed ? 30 : 0)) // fun plan: sending pays, so Hard leans on offense
   const spent = L.stats.towerGold + L.stats.sendGold
   const wantDefense = L.stats.towerGold * 100 <= share * spent || recentLeaks > 2 || t < SEND.prepS
 
@@ -63,7 +75,7 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
 
 type C = Cmd extends infer T ? T extends Cmd ? Omit<T, 'p'> : never : never
 
-type Threat = 'light' | 'heavy' | 'shielded' | 'air'
+export type Threat = 'light' | 'heavy' | 'shielded' | 'air'
 const COUNTER: Record<Threat, TowerKind> = { light: 'gatling', heavy: 'mortar', shielded: 'tesla', air: 'flak' }
 
 // What is coming at us: robots seen so far plus the opponent's factories (full visibility).
@@ -74,6 +86,13 @@ function threats(O: Lane, mem: BotMem): Record<Threat, number> {
     w[ROBOTS[k].air ? 'air' : ROBOTS[k].armor] += 150 * O.factories[k]
   }
   return w
+}
+
+// Threat radar for the HUD: the lane's damage against each threat, 0..100 relative to its strongest one.
+export function radar(L: Lane): Record<Threat, number> {
+  const c = coverageByThreat(L.towers.filter((x): x is Tower => !!x), new Set(pathFrom(L.openDist, L.towers)))
+  const max = Math.max(c.light, c.heavy, c.shielded, c.air, 2)
+  return { light: Math.round(100 * (c.light - 1) / max), heavy: Math.round(100 * (c.heavy - 1) / max), shielded: Math.round(100 * (c.shielded - 1) / max), air: Math.round(100 * (c.air - 1) / max) }
 }
 
 // Our damage against each threat: dps times how many cells of that threat's route each tower reaches.
@@ -115,6 +134,8 @@ function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: nu
       if (need === 'light' && t > 300 && towers.filter(x => x.kind === 'laser').length < 2) kind = 'laser'
       if (need === 'shielded' && towers.filter(x => x.kind === 'tesla').length > 3) kind = 'laser'
       if (towers.length > 18 && !towers.some(x => x.kind === 'emp')) kind = 'emp'
+      // aura swarm coming: EMP jams Repair/Shield bots and strips shields
+      if ((O.factories.repair || O.factories.shield) && towers.filter(x => x.kind === 'emp').length < 1 + (O.factories.repair + O.factories.shield >> 1)) kind = 'emp'
     } else {
       kind = (['gatling', 'mortar', 'tesla'] as TowerKind[])[towers.length % 3]
     }

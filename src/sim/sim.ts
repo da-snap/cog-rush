@@ -20,7 +20,7 @@ export type FxKind = 'line' | 'boom' | 'pulse' | 'beam'
 export type Ev = { p: number } & (
   | { t: 'fx'; k: FxKind; tower: TowerKind; x1: number; y1: number; x2: number; y2: number; r: number }
   | { t: 'kill'; robot: number }
-  | { t: 'leak'; robot: number }
+  | { t: 'leak'; robot: number; kind: RobotKind; owner: number; dmg: number }
   | { t: 'towerLost'; tower: number }
   | { t: 'wave'; n: number }
   | { t: 'released'; kinds: RobotKind[] } // p = target lane
@@ -35,10 +35,10 @@ export interface Robot {
   id: number; kind: RobotKind; owner: number // -1 = neutral
   x: number; y: number; cx: number; cy: number; hp: number; maxHp: number
   shield: number; gotShield: boolean
-  slow: number; stun: number; amp: number // status, refreshed every tick by EMPs
+  slow: number; stun: number; amp: number; jam: boolean // status, refreshed every tick by EMPs
 }
 export interface Burn { x: number; y: number; ticks: number; dmg: number }
-export interface Spawn { kind: RobotKind; hp: number; owner: number }
+export interface Spawn { kind: RobotKind; hp: number; owner: number; shield?: number }
 export interface Lane {
   p: number; gold: number; income: number; lives: number
   towers: (Tower | null)[] // by cell index y*COLS+x
@@ -48,6 +48,7 @@ export interface Lane {
   queue: { kind: RobotKind; left: number }[] // build ticks left, 0 = ready to release
   incoming: { at: number; robots: Spawn[] }[] // released at us, visible before they spawn
   spawnQueue: Spawn[]
+  released: number // gold of robots released, drives income
   stats: { sent: number; leaksTaken: number; kills: number; towerGold: number; sendGold: number; income: number[] }
 }
 export interface Game {
@@ -71,7 +72,7 @@ export function newLane(p: number): Lane {
     towers: Array(COLS * ROWS).fill(null), robots: [], burns: [],
     openDist: [], breachDist: [], sealed: false,
     factories: { scout: 1, drone: 0, repair: 0, shield: 0, tank: 0, splitter: 0, breaker: 0, colossus: 0 },
-    queue: [], incoming: [], spawnQueue: [],
+    queue: [], incoming: [], spawnQueue: [], released: 0,
     stats: { sent: 0, leaksTaken: 0, kills: 0, towerGold: 0, sendGold: 0, income: [START_INCOME] },
   }
   recompute(L)
@@ -267,7 +268,10 @@ export function step(g: Game, cmds: Cmd[]): void {
   if (g.winner !== -1) return
   for (const c of cmds) apply(g, c)
 
-  if (g.tick > 0 && g.tick % (60 * TICK_HZ) === 0) g.sendHpBp = Math.floor(g.sendHpBp * (100 + SEND.hpGrowthPctPerMin) / 100)
+  if (g.tick > 0 && g.tick % (60 * TICK_HZ) === 0) { // sent robots: +a% per minute plus b% per minute², so offense keeps pace with towers piling up
+    const m = g.tick / (60 * TICK_HZ)
+    g.sendHpBp = 10000 + SEND.hpGrowthPctPerMin * 100 * m + SEND.hpGrowthPctPerMin2 * 100 * m * m
+  }
 
   // income (frozen while sealed)
   if (g.tick > 0 && g.tick % (INCOME_EVERY_S * TICK_HZ) === 0) for (const L of g.lanes) {
@@ -288,9 +292,9 @@ export function step(g: Game, cmds: Cmd[]): void {
   }
 
   for (const L of g.lanes) {
-    // send queue builds one robot at a time
-    const building = L.queue.find(q => q.left > 0)
-    if (building) building.left--
+    // every factory builds its own robots, one at a time (fun plan: send throughput grows with factories)
+    const busy = new Set<RobotKind>()
+    for (const q of L.queue) if (q.left > 0 && !busy.has(q.kind)) { busy.add(q.kind); q.left-- }
     // released waves land after the preview
     while (L.incoming.length && L.incoming[0].at <= g.tick) L.spawnQueue.push(...L.incoming.shift()!.robots)
     if (L.spawnQueue.length && g.tick % SEND.gapTicks === 0) spawn(g, L, L.spawnQueue.shift()!)
@@ -310,7 +314,7 @@ export function step(g: Game, cmds: Cmd[]): void {
 export function spawn(g: Game, L: Lane, s: Spawn, cx = SPAWN % COLS, cy = 0): Robot {
   const r: Robot = {
     id: g.nextId++, kind: s.kind, owner: s.owner, x: center(cx), y: center(cy), cx, cy, hp: s.hp, maxHp: s.hp,
-    shield: 0, gotShield: false, slow: 0, stun: 0, amp: 100,
+    shield: s.shield ?? 0, gotShield: !!s.shield, slow: 0, stun: 0, amp: 100, jam: false,
   }
   L.robots.push(r)
   return r
@@ -365,7 +369,7 @@ function apply(g: Game, c: Cmd) {
       if (canLoad(g, L, c.kind)) return
       L.gold -= ROBOTS[c.kind].sendCost
       L.stats.sendGold += ROBOTS[c.kind].sendCost
-      L.queue.push({ kind: c.kind, left: ROBOTS[c.kind].buildS * TICK_HZ })
+      L.queue.push({ kind: c.kind, left: Math.floor(ROBOTS[c.kind].buildS * TICK_HZ * FACTORY.buildPctByLevel[L.factories[c.kind] - 1] / 100) })
       return
     }
     case 'release': {
@@ -373,8 +377,13 @@ function apply(g: Game, c: Cmd) {
       const ready = L.queue.filter(q => q.left === 0)
       L.queue = L.queue.filter(q => q.left > 0)
       const target = g.lanes[opponent(g, L.p)]
-      const robots = ready.map(q => ({ kind: q.kind, hp: Math.floor(robotHp(q.kind, L.factories[q.kind] || 1) * g.sendHpBp / 10000), owner: L.p }))
-      for (const q of ready) L.income += ROBOTS[q.kind].income
+      const burst = ready.length >= SEND.burstMin
+      const robots = ready.map(q => {
+        const hp = Math.floor(robotHp(q.kind, L.factories[q.kind] || 1) * g.sendHpBp / 10000)
+        return { kind: q.kind, hp, owner: L.p, shield: burst ? Math.floor(hp * SEND.burstShieldPct / 100) : 0 }
+      })
+      for (const q of ready) L.released += ROBOTS[q.kind].sendCost
+      L.income = START_INCOME + Math.floor(L.released / SEND.goldPerIncome)
       L.stats.sent += ready.length
       target.incoming.push({ at: g.tick + SEND.previewS * TICK_HZ, robots })
       g.events.push({ t: 'released', p: target.p, kinds: ready.map(q => q.kind) })
@@ -389,17 +398,8 @@ const inRange = (t: Tower, r: Robot, rangeMc: number) => dist2(r.x, r.y, center(
 // Robot auras (repair, shield) and EMP auras (slow, overload, stun pulse). Before movement and firing.
 function applyStatus(L: Lane) {
   const healed = new Set<Robot>()
-  for (const r of L.robots) { r.slow = 0; r.amp = 100; if (r.stun > 0) r.stun-- }
-  for (const a of L.robots) {
-    if (a.kind !== 'repair' && a.kind !== 'shield') continue
-    for (const r of L.robots) {
-      if (r.hp <= 0) continue
-      // heals don't stack: each robot is healed by at most one Repair bot per tick
-      if (a.kind === 'repair' && !healed.has(r) && dist2(a.x, a.y, r.x, r.y) <= AURA.repairMc ** 2) { healed.add(r); r.hp = Math.min(r.maxHp, r.hp + Math.floor(r.maxHp * AURA.repairPctPerS / 100 / TICK_HZ)) }
-      // default for an open question: each robot gets one shield, shields don't stack, Repair doesn't heal them
-      if (a.kind === 'shield' && r !== a && !r.gotShield && dist2(a.x, a.y, r.x, r.y) <= AURA.shieldMc ** 2) { r.shield = Math.floor(r.maxHp * AURA.shieldPct / 100); r.gotShield = true }
-    }
-  }
+  for (const r of L.robots) { r.slow = 0; r.amp = 100; r.jam = false; if (r.stun > 0) r.stun-- }
+  // EMPs first: a robot in an EMP field is jammed (fun plan: EMP is the answer to aura swarms)
   for (const t of L.towers) {
     if (!t || t.kind !== 'emp') continue
     const st = towerStats(t)
@@ -408,8 +408,20 @@ function applyStatus(L: Lane) {
     for (const r of L.robots) {
       if (!canHit(st.def, r) || !inRange(t, r, st.rangeMc)) continue
       r.slow = Math.max(r.slow, st.def.slowPct!)
+      r.jam = true
+      r.shield = 0 // shields fizzle
       if (t.branch === 'overload') r.amp = Math.max(r.amp, BRANCH.overloadPct)
       if (pulse) r.stun = BRANCH.stunTicks
+    }
+  }
+  for (const a of L.robots) {
+    if ((a.kind !== 'repair' && a.kind !== 'shield') || a.jam) continue // a jammed aura bot emits nothing
+    for (const r of L.robots) {
+      if (r.hp <= 0 || r.jam) continue
+      // heals don't stack: each robot is healed by at most one Repair bot per tick
+      if (a.kind === 'repair' && !healed.has(r) && dist2(a.x, a.y, r.x, r.y) <= AURA.repairMc ** 2) { healed.add(r); r.hp = Math.min(r.maxHp, r.hp + Math.floor(r.maxHp * AURA.repairPctPerS / 100 / TICK_HZ)) }
+      // default for an open question: each robot gets one shield, shields don't stack, Repair doesn't heal them
+      if (a.kind === 'shield' && r !== a && !r.gotShield && dist2(a.x, a.y, r.x, r.y) <= AURA.shieldMc ** 2) { r.shield = Math.floor(r.maxHp * AURA.shieldPct / 100); r.gotShield = true }
     }
   }
 }
@@ -454,10 +466,11 @@ function moveRobots(g: Game, L: Lane) {
 
 function leak(g: Game, L: Lane, r: Robot) {
   r.hp = 0
-  L.lives = Math.max(0, L.lives - (L.sealed ? 2 : 1))
+  const dmg = ROBOTS[r.kind].leak * (L.sealed ? 2 : 1)
+  L.lives = Math.max(0, L.lives - dmg)
   L.stats.leaksTaken++
   if (r.owner >= 0) g.lanes[r.owner].gold += Math.floor(ROBOTS[r.kind].sendCost * SEND.leakPct / 100)
-  g.events.push({ t: 'leak', p: L.p, robot: r.id })
+  g.events.push({ t: 'leak', p: L.p, robot: r.id, kind: r.kind, owner: r.owner, dmg })
 }
 
 // returns true if any tower was destroyed
@@ -479,10 +492,10 @@ function hitTower(g: Game, L: Lane, t: Tower, r: Robot, breach: boolean): boolea
 }
 
 // Every point of damage goes through here: damage triangle, armor-piercing, overload, shields.
-export function damage(g: Game, L: Lane, r: Robot, raw: number, type: DamageType, pierce = false) {
+export function damage(g: Game, L: Lane, r: Robot, raw: number, type: DamageType, pierce = false, skipShield = false) {
   if (r.hp <= 0) return
   let amt = Math.floor(raw * (pierce ? 100 : ARMOR_MULT_PCT[type][ROBOTS[r.kind].armor]) / 100 * r.amp / 100)
-  const absorbed = Math.min(r.shield, amt)
+  const absorbed = skipShield ? 0 : Math.min(r.shield, amt)
   r.shield -= absorbed
   amt -= absorbed
   r.hp -= amt
@@ -521,7 +534,7 @@ function fireTowers(g: Game, L: Lane) {
     const tx = center(t.x), ty = center(t.y)
     const shot = Math.floor(st.dps * d.period / TICK_HZ)
     const fx = (k: FxKind, x2: number, y2: number, r = 0, x1 = tx, y1 = ty) => g.events.push({ t: 'fx', p: L.p, k, tower: t.kind, x1, y1, x2, y2, r })
-    const hurt = (r: Robot, amt: number, pierce = false) => damage(g, L, r, amt, d.dmg, pierce)
+    const hurt = (r: Robot, amt: number, pierce = false) => damage(g, L, r, amt, d.dmg, pierce, d.attack === 'beam') // Laser beams ignore shields
 
     if (d.attack === 'aura') {
       const hits = L.robots.filter(r => canHit(d, r) && inRange(t, r, st.rangeMc))

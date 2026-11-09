@@ -1,6 +1,6 @@
 // Run: npm test (node strips the types). Plain asserts, no framework.
 import assert from 'node:assert/strict'
-import { AURA, COLS, MC, ROBOTS, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
+import { AURA, COLS, LIVES, MC, ROBOTS, SEND, START_INCOME, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
 import { INF, damage, newGame, spawn, step, towerStats, wouldSeal, type Cmd, type Game, type Lane } from './sim.ts'
 
 type C = Cmd extends infer T ? T extends Cmd ? Omit<T, 'p'> : never : never
@@ -40,7 +40,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
 {
   const { g } = game()
   for (let i = 0; i < 20 * 60; i++) step(g, [])
-  assert.ok(g.lanes.every(L => L.lives < 20))
+  assert.ok(g.lanes.every(L => L.lives < LIVES))
 }
 
 // 4. Sealed lane: robots breach the wall, open it again and leaks cost 2 lives.
@@ -188,7 +188,8 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   assert.equal(L.queue.filter(q => q.left === 0).length, 2, 'both built after 6 s')
   const income = L.income
   step(g, at(0, [{ t: 'release' }]))
-  assert.equal(L.income, income + ROBOTS.tank.income + ROBOTS.scout.income)
+  assert.equal(L.income, START_INCOME + Math.floor((ROBOTS.tank.sendCost + ROBOTS.scout.sendCost) / SEND.goldPerIncome))
+  assert.ok(L.income > income)
   assert.equal(R.incoming.length, 1)
   for (let i = 0; i < 4 * TICK_HZ + 1; i++) step(g, [])
   assert.equal(R.incoming.length, 0, 'landed after the 4 s preview')
@@ -236,6 +237,38 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   g.lanes[1].lives = 1
   for (let i = 0; i < 60 * TICK_HZ && g.winner === -1; i++) step(g, [])
   assert.notEqual(g.winner, -1)
+}
+
+// 15. Leaks cost core HP by robot tier; a burst of 6+ gets an Overdrive shield.
+{
+  const { g, L } = game()
+  const R = g.lanes[1]
+  const before = R.lives
+  const r = spawn(g, R, { kind: 'tank', hp: 1e9, owner: 0 }, 5, 17)
+  for (let i = 0; i < 20 * TICK_HZ && r.hp > 0; i++) quiet(g)
+  assert.equal(R.lives, before - ROBOTS.tank.leak)
+  L.gold = 10_000
+  step(g, at(0, Array.from({ length: SEND.burstMin }, () => ({ t: 'load', kind: 'scout' }) as C)))
+  for (let i = 0; i < 10 * TICK_HZ; i++) quiet(g)
+  quiet(g, at(0, [{ t: 'release' }]))
+  assert.ok(R.incoming[0].robots.every(s => s.shield! > 0), 'burst shield')
+}
+
+// 16. EMP jams auras and strips shields; Laser beams skip shields.
+{
+  const { g, L } = game()
+  L.gold = 10_000
+  quiet(g, at(0, [{ t: 'build', x: 5, y: 6, kind: 'emp' }]))
+  put(g, L, 'shield', 5, 5)
+  const a = put(g, L, 'tank', 5, 7)
+  quiet(g)
+  assert.equal(a.shield, 0, 'no shield inside an EMP field')
+  const b = put(g, L, 'tank', 0, 17)
+  b.shield = 50 * MC
+  const hp = b.hp
+  damage(g, L, b, 10 * MC, 'energy', false, true)
+  assert.equal(b.shield, 50 * MC)
+  assert.ok(b.hp < hp)
 }
 
 console.log('sim ok')
