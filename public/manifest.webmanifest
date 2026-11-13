@@ -2,10 +2,10 @@
   "name": "CogRush",
   "short_name": "CogRush",
   "description": "Real-time 1v1 robot line tower wars.",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0B0D10",
   "theme_color": "#0B0D10",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }

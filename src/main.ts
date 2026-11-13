@@ -657,7 +657,7 @@ requestAnimationFrame(frame)
 const q = new URLSearchParams(location.search).get('play')
 if (q && q in DIFFICULTY) start(q as keyof typeof DIFFICULTY)
 
-if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js')
+if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js')
 // dev console hook: game() returns live state
 if (import.meta.env.DEV) Object.assign(window, {
   game: () => g, cmd: (c: Cmd) => pending.push(c), world,
