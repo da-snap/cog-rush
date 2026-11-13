@@ -1,7 +1,7 @@
 import { Scene3D, type UiState } from './scene3d.ts'
 import * as sfx from './audio.ts'
 import {
-  ARMOR_MULT_PCT, COLS, FACTORY, INCOME_EVERY_S, LIVES, ROBOTS, ROBOT_KINDS, ROWS, SEND, SUDDEN, TICK_HZ, TOWERS, TOWER_KINDS,
+  ARMOR_MULT_PCT, AURA, COLS, FACTORY, INCOME_EVERY_S, LIVES, ROBOTS, ROBOT_KINDS, ROWS, SEND, SUDDEN, TICK_HZ, TOWERS, TOWER_KINDS,
   type RobotKind, type TowerKind,
 } from './sim/config.ts'
 import {
@@ -23,7 +23,7 @@ const ROBOT_ROLE: Record<RobotKind, string> = {
   scout: 'Light · fast, cheap rusher',
   drone: 'Light · flies straight to the exit, ignores the maze',
   repair: 'Light · heals robots within 2 cells',
-  shield: 'Shielded · gives nearby robots a 50 HP shield',
+  shield: `Shielded · gives nearby robots a ${AURA.shieldPct}% shield`,
   tank: 'Heavy · slow damage sponge',
   splitter: 'Shielded · splits into 3 Scouts when destroyed',
   breaker: 'Heavy · damages towers next to its path',
@@ -110,7 +110,7 @@ function startReplay() {
 }
 
 function begin() {
-  g = newGame()
+  g = newGame(); tourEnd()
   for (const id of ['botTag', 'oppView']) { const el = document.getElementById(id); if (el) el.textContent = rival().toUpperCase() }
   $('pause').hidden = !!net
   if (!replay) rec = { log: new Map(), lives: [[LIVES], [LIVES]], income: [[0], [0]], lost: [new Map(), new Map()] }
@@ -178,7 +178,7 @@ function closeNet() {
   ws.close()
 }
 function toMenu() {
-  closeNet()
+  closeNet(); tourEnd()
   replay = null
   $('end').hidden = true; $('lobby').hidden = true; $('ladder').hidden = true; $('menu').hidden = false
   document.body.classList.add('menu'); g = null; startDemo(); sfx.stopMusic()
@@ -577,6 +577,47 @@ function hud(g: Game) {
   } else banner.hidden = true
 }
 
+// --- tutorial tour: one short step at a time. Steps with `done` wait for the player to do it (the
+// match runs); the others pause the match until Next. The bot sleeps until the tour ends.
+const towerCount = (L: Lane) => L.towers.filter(Boolean).length
+const TOUR: { text: string; spot?: string; done?: (L: Lane) => boolean; enter?: () => void }[] = [
+  { text: 'This is you: core HP, gold, and income. Income pays out every 5 s.', spot: '#meRow' },
+  { text: 'Your rival. Robots that reach a core damage it. Break theirs to win.', spot: '.who.bot' },
+  { text: 'Your lane. Robots enter at the top and walk to your core at the bottom.', spot: '#lane' },
+  { text: 'Pick the Gatling tower.', spot: '#body', done: () => buildKind === 'gatling' },
+  { text: 'Tap a cell to build it.', spot: '#lane', done: L => towerCount(L) >= 1 },
+  { text: 'Now drag across 3 cells to build a short wall.', spot: '#lane', done: L => towerCount(L) >= 4 },
+  { text: 'Towers are walls: robots take the shortest path. Make it long, but never close it.', spot: '#lane' },
+  { text: 'Time to attack. Open SEND.', spot: '[data-tab=send]', done: () => tab === 'send' },
+  { text: 'Load 3 Scouts (10 gold each, income refills your gold).', spot: '#body', done: L => L.queue.length >= 3 || L.released > 0 },
+  { text: 'Release them into your rival\'s lane (unlocks when the prep timer ends).', spot: '#body', done: L => L.released > 0 },
+  { text: 'Every robot you send raises your income for the rest of the match.', spot: '#meRow' },
+  { text: 'Open FACTORIES.', spot: '[data-tab=factories]', done: () => tab === 'factories' },
+  { text: 'Factories unlock stronger robots. Only 4 slots, so pick a plan.', spot: '#body' },
+  { text: 'Counter armor: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.', spot: '#body', enter: () => { tab = 'build'; renderPanel(true) } },
+  { text: 'That\'s it! The Easy bot wakes up now. Press ? for help any time.' },
+]
+let tourAt = -1 // -1: no tour
+function tourShow() {
+  for (const e of document.querySelectorAll('.spot')) e.classList.remove('spot')
+  const s = TOUR[tourAt]
+  if (!s) return tourEnd()
+  s.enter?.()
+  if (g) hud(g)
+  $('coachText').textContent = s.text
+  $('coach').classList.toggle('act', !!s.done)
+  $('coachNext').textContent = tourAt === TOUR.length - 1 ? 'Play' : 'Next'
+  $('coach').hidden = false
+  if (s.spot) document.querySelector(s.spot)?.classList.add('spot')
+}
+function tourEnd() {
+  tourAt = -1; $('coach').hidden = true
+  for (const e of document.querySelectorAll('.spot')) e.classList.remove('spot')
+}
+$('coachNext').onclick = () => { tourAt++; tourShow() }
+$('coachSkip').onclick = tourEnd
+$('tourBtn').onclick = () => { store.set('hinted', '1'); diff = 'easy'; play(DIFFICULTY.easy, { kind: 'bot' }); tourAt = 0; tourShow() }
+
 let acc = 0, lastFrame = performance.now()
 const DT = 1000 / TICK_HZ
 function frame(now: number) {
@@ -599,7 +640,9 @@ function frame(now: number) {
     return
   }
   const ui = uiState()
-  const running = !paused && g.winner === -1
+  const tour = TOUR[tourAt]
+  if (tour?.done?.(g.lanes[ME])) { tourAt++; tourShow() }
+  const running = !paused && g.winner === -1 && !(tour && !tour.done)
   let stepped = false
   const one = (cmds: Cmd[]) => {
     const game = g!
@@ -623,7 +666,7 @@ function frame(now: number) {
     while (running && acc >= DT && g.winner === -1) {
       acc -= DT
       if (replay) { pending = []; one(replay.log.get(g.tick) ?? []) }
-      else { one([...pending, ...botThink(g, OPP, bot!.st, bot!.mem)]); pending = [] }
+      else { one([...pending, ...(tourAt >= 0 ? [] : botThink(g, OPP, bot!.st, bot!.mem))]); pending = [] }
     }
     alpha = running ? acc / DT : 1
   }
