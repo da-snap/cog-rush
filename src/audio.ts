@@ -3,7 +3,7 @@
 import type { TowerKind } from './sim/config.ts'
 
 let ctx: AudioContext | null = null
-let master: GainNode, sfx: GainNode, music: GainNode
+let master: GainNode, sfx: GainNode, music: GainNode, musicTone: BiquadFilterNode
 let noise: AudioBuffer
 let muted = false
 try { muted = localStorage.getItem('cogrush-muted') === '1' } catch { /* storage blocked */ }
@@ -16,7 +16,10 @@ export function unlockAudio() {
   const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 6
   comp.connect(master)
   sfx = ctx.createGain(); sfx.gain.value = 0.55; sfx.connect(comp)
-  music = ctx.createGain(); music.gain.value = 0.22; music.connect(comp)
+  music = ctx.createGain(); music.gain.value = 0.22
+  // the music bus is filtered: calm = muffled, intense = full brightness
+  musicTone = ctx.createBiquadFilter(); musicTone.type = 'lowpass'; musicTone.frequency.value = 1400
+  music.connect(musicTone).connect(comp)
   noise = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
   const d = noise.getChannelData(0)
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
@@ -102,9 +105,10 @@ export function stinger(win: boolean) {
   notes.forEach((f, i) => tone('triangle', f, f, 0.35, 0.16, sfx, i * 0.16))
 }
 
-// --- music: a small industrial loop, faster in sudden death ------------------
+// --- music: a small industrial loop that follows the danger ---------------
+// intensity 0..1 (see setIntensity) drives tempo, filter, hats, arp density and a lead line
 
-let musicTimer = 0, step = 0, intense = false
+let musicTimer = 0, step = 0, target = 0, level = 0
 const BASS = [55, 55, 65.4, 55, 49, 49, 58.3, 49]
 const ARP = [220, 261.6, 329.6, 261.6, 196, 246.9, 293.7, 246.9]
 
@@ -112,15 +116,24 @@ export function startMusic() {
   if (!ctx || musicTimer) return
   const tick = () => {
     if (!ctx) return
+    level += (target - level) * 0.04 // ~2 s glide so it swells instead of jumping
+    const t = ctx.currentTime
+    musicTone.frequency.setTargetAtTime(1400 + level * 6600, t, 0.2)
+    music.gain.setTargetAtTime(0.2 + level * 0.08, t, 0.2)
     const bar = Math.floor(step / 4) % BASS.length
+    const arp = ARP[(step + bar) % ARP.length]
     if (step % 2 === 0) tone('sawtooth', BASS[bar], BASS[bar] * 0.98, 0.22, 0.25, music)
-    if (step % 4 === 0) { burst(0.12, 0.3, 160) } // kick-ish
+    if (step % 4 === 0) burst(0.12, 0.3, 160) // kick-ish
+    if (level > 0.6 && step % 8 === 6) burst(0.12, 0.25, 160) // extra kick, double-time feel
     if (step % 8 === 4) burst(0.08, 0.18, 4000, 1, 'highpass') // snare-ish hat
-    if (intense || step % 2 === 1) tone('square', ARP[(step + bar) % ARP.length], ARP[(step + bar) % ARP.length], 0.09, 0.05, music)
+    if (level > 0.3 && step % 2 === 1) burst(0.03, 0.08, 7000, 1, 'highpass') // offbeat hats
+    if (level > 0.45 || step % 2 === 1) tone('square', arp, arp, 0.09, 0.05, music)
+    if (level > 0.75 && step % 4 === 2) tone('sawtooth', arp * 2, arp * 2, 0.16, 0.035, music) // lead stab
     step++
-    musicTimer = window.setTimeout(tick, intense ? 105 : 150)
+    musicTimer = window.setTimeout(tick, 150 - level * 50)
   }
   tick()
 }
 export function stopMusic() { clearTimeout(musicTimer); musicTimer = 0 }
-export function setIntense(on: boolean) { intense = on }
+/** 0 = calm, 1 = all hands. Call often; the music glides toward it. */
+export function setIntensity(x: number, instant = false) { target = Math.max(0, Math.min(1, x)); if (instant) level = target }

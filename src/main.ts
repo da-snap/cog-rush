@@ -115,7 +115,7 @@ function begin() {
   $('pause').hidden = !!net
   if (!replay) rec = { log: new Map(), lives: [[LIVES], [LIVES]], income: [[0], [0]], lost: [new Map(), new Map()] }
   pending = []; sel = null; view = ME; paused = false; lastLives = [LIVES, LIVES]; prev.clear(); tab = 'build'; buildKind = null; demo = null
-  sfx.unlockAudio(); sfx.setIntense(false); sfx.startMusic(); sfx.horn()
+  sfx.unlockAudio(); sfx.setIntensity(0, true); sfx.startMusic(); sfx.horn()
   $('menu').hidden = true
   document.body.classList.remove('menu')
   $('end').hidden = true
@@ -632,6 +632,16 @@ function frame(now: number) {
   adapt(dtMs)
 }
 
+/** 0..1 for the music: final phase, a weak core and robots close to it all push it up */
+function musicIntensity(g: Game) {
+  const L = g.lanes[ME], s = secs(g)
+  const phase = s >= SUDDEN.fromS ? 0.55 : Math.max(0, (s - (SUDDEN.fromS - 60)) / 60) * 0.3 // last minute before sudden death builds up
+  let near = 0 // leak damage on its way, weighted by how far down the lane it is
+  for (const r of L.robots) near += ROBOTS[r.kind].leak * Math.max(0, r.cy / ROWS - 0.4) / 0.6
+  const core = L.lives < LIVES * 0.3 ? 0.2 : 0
+  return phase + core + Math.min(0.6, near / 15)
+}
+
 /** toasts and sounds after one sim step */
 function after(g: Game, wasSealed: boolean) {
   {
@@ -640,7 +650,8 @@ function after(g: Game, wasSealed: boolean) {
     if (g.tick === SEND.prepS * TICK_HZ) toast(hints ? 'Sending unlocked! Open SEND, load Scouts, press Release. Every robot you send raises your income.' : 'Sending unlocked!', hints ? 6000 : 1800)
     if (hints && g.tick === 3 * TICK_HZ) toast('Pick a tower, then tap cells: robots take the shortest path, so make it long', 6000)
     if (hints && g.tick === 70 * TICK_HZ) { toast('Watch the bars under BUILD: red is your weak armor type, and the bot will hit it', 6000); hints = false }
-    if (g.tick === SUDDEN.fromS * TICK_HZ) { toast('Sudden death: waves every 15 s', 3000); sfx.setIntense(true) }
+    if (g.tick === SUDDEN.fromS * TICK_HZ) { toast('Sudden death: waves every 15 s', 3000) }
+    if (g.tick % 10 === 0) sfx.setIntensity(musicIntensity(g))
     if (g.winner !== -1) end(g)
   }
 }
