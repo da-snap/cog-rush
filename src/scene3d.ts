@@ -204,6 +204,18 @@ function boardTexture() {
   return t
 }
 
+/** Floor sign beyond the drop end that says whose lane this is. */
+function signTexture(title: string, sub: string, color: string) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128
+  const x = c.getContext('2d')!
+  x.textAlign = 'center'; x.fillStyle = color
+  x.font = 'bold 56px JetBrains Mono, monospace'; x.fillText(title, 256, 60)
+  x.globalAlpha = 0.75; x.font = 'bold 30px JetBrains Mono, monospace'; x.fillText(sub, 256, 108)
+  const t = new THREE.CanvasTexture(c)
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4
+  return t
+}
+
 function floorTexture() {
   const c = document.createElement('canvas'); c.width = c.height = 256
   const x = c.getContext('2d')!
@@ -230,6 +242,9 @@ export class Scene3D {
   shadows: THREE.InstancedMesh; bars: THREE.InstancedMesh; chevrons: THREE.InstancedMesh
   ghost: THREE.InstancedMesh; range: THREE.Mesh; rangeFill: THREE.Mesh; selRing: THREE.Mesh
   boards: THREE.Mesh[] = []; sealGlow: THREE.Mesh[] = []
+  // whose lane is whose: rail strips + floor sign, recolored per frame from ui.me
+  strips: THREE.MeshBasicMaterial[] = []; signs: THREE.Mesh[] = []
+  signTex = { own: signTexture('YOUR LANE', 'BUILD HERE', '#FFC42E'), rival: signTexture('ENEMY LANE', 'YOUR ROBOTS ATTACK HERE', '#FF5468') }
   rv = new Map<number, RobotVis>(); tv = new Map<number, TowerVis>()
   time = 0; shakeAmt = 0
   cam = { x: 5.5, z: 10, dist: 30, tx: 5.5, tz: 10, tdist: 30, ready: false }
@@ -257,9 +272,10 @@ export class Scene3D {
       board.position.set(ox + COLS / 2, 0, ROWS / 2); s.add(board); this.boards.push(board)
       // side rails with hazard caps
       const railMat = new THREE.MeshStandardMaterial({ color: 0x1c2027, flatShading: true, metalness: 0.5, roughness: 0.5 })
+      const stripMat = new THREE.MeshBasicMaterial({ color: 0xb08a20, toneMapped: false }); this.strips.push(stripMat)
       for (const rx of [-0.2, COLS + 0.2]) {
         const rail = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, ROWS + 0.4), railMat); rail.position.set(ox + rx, 0.25, ROWS / 2); s.add(rail)
-        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, ROWS + 0.4), new THREE.MeshBasicMaterial({ color: 0xb08a20, toneMapped: false }))
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.04, ROWS + 0.4), stripMat)
         strip.position.set(ox + rx + (rx < 0 ? 0.17 : -0.17), 0.52, ROWS / 2); s.add(strip)
       }
       const endMat = new THREE.MeshStandardMaterial({ color: 0x14171c, flatShading: true })
@@ -269,6 +285,8 @@ export class Scene3D {
       }
       const glow = new THREE.Mesh(new THREE.PlaneGeometry(COLS + 0.6, ROWS + 0.6).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: COL.rogue, transparent: true, opacity: 0, depthWrite: false, toneMapped: false }))
       glow.position.set(ox + COLS / 2, 0.01, ROWS / 2); s.add(glow); this.sealGlow.push(glow)
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(COLS, COLS / 4).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: this.signTex.own, transparent: true, depthWrite: false, toneMapped: false }))
+      sign.position.set(ox + COLS / 2, 0.01, -0.7 - COLS / 8); sign.visible = false; s.add(sign); this.signs.push(sign)
     }
 
     this.towers = new Batch(s, TOWER_MODELS, COLS * ROWS * 2)
@@ -441,6 +459,11 @@ export class Scene3D {
 
     g.lanes.forEach((L, p) => {
       const ox = p * LANE_GAP
+      const mine = ui.me < 0 ? -1 : p === ui.me ? 1 : 0
+      this.strips[p].color.set(mine < 0 ? 0xb08a20 : mine ? COL.hazard : COL.rogue)
+      ;(this.boards[p].material as THREE.MeshStandardMaterial).color.set(mine === 0 ? 0xffd6dc : 0xffffff)
+      const sign = this.signs[p], sm = sign.material as THREE.MeshBasicMaterial
+      sign.visible = mine >= 0; sm.map = mine ? this.signTex.own : this.signTex.rival
       ;(this.sealGlow[p].material as THREE.MeshBasicMaterial).opacity = L.sealed ? 0.12 + Math.sin(t * 8) * 0.06 : 0
 
       // towers
@@ -610,7 +633,10 @@ export class Scene3D {
       this.mini.lookAt(other * LANE_GAP + COLS / 2, 0, ROWS / 2)
       this.mini.updateProjectionMatrix()
       r.setScissorTest(true)
-      r.setScissor(m.x, H - m.y - m.h, m.w, m.h); r.setViewport(m.x, H - m.y - m.h, m.w, m.h)
+      // frame in the owner's color (yellow = yours, red = enemy), then the map inset by 2px
+      r.setScissor(m.x, H - m.y - m.h, m.w, m.h)
+      r.setClearColor(other === ui.me ? COL.hazard : COL.rogue); r.clear(); r.setClearColor(0x000000)
+      r.setScissor(m.x + 2, H - m.y - m.h + 2, m.w - 4, m.h - 4); r.setViewport(m.x + 2, H - m.y - m.h + 2, m.w - 4, m.h - 4)
       r.clear()
       r.render(this.scene, this.mini)
       r.setScissorTest(false)
