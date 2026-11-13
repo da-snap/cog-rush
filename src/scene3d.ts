@@ -179,7 +179,8 @@ class Rings {
 
 // --- board texture -----------------------------------------------------------------
 
-function boardTexture() {
+/** Board with zone labels; the labels carry whose lane it is (drop = where robots land, core = what you defend). */
+function boardTexture(drop = 'DROP', dropCol = 'rgba(140,230,107,.8)', core = 'CORE') {
   const S = 48, c = document.createElement('canvas')
   c.width = COLS * S; c.height = ROWS * S
   const x = c.getContext('2d')!
@@ -196,8 +197,8 @@ function boardTexture() {
   x.strokeStyle = '#20252C'; x.lineWidth = 2
   for (let i = 0; i <= COLS; i++) { x.beginPath(); x.moveTo(i * S, 0); x.lineTo(i * S, c.height); x.stroke() }
   for (let j = 0; j <= ROWS; j++) { x.beginPath(); x.moveTo(0, j * S); x.lineTo(c.width, j * S); x.stroke() }
-  x.font = 'bold 22px JetBrains Mono, monospace'; x.fillStyle = 'rgba(140,230,107,.8)'; x.fillText('DROP', 10, 30)
-  x.fillStyle = 'rgba(255,84,104,.85)'; x.fillText('CORE', 10, ROWS * S - 14)
+  x.font = 'bold 22px JetBrains Mono, monospace'; x.fillStyle = dropCol; x.fillText(drop, 10, 30)
+  x.fillStyle = 'rgba(255,84,104,.85)'; x.fillText(core, 10, ROWS * S - 14)
   const t = new THREE.CanvasTexture(c)
   t.colorSpace = THREE.SRGBColorSpace
   t.anisotropy = 4
@@ -230,6 +231,9 @@ export class Scene3D {
   shadows: THREE.InstancedMesh; bars: THREE.InstancedMesh; chevrons: THREE.InstancedMesh
   ghost: THREE.InstancedMesh; range: THREE.Mesh; rangeFill: THREE.Mesh; selRing: THREE.Mesh
   boards: THREE.Mesh[] = []; sealGlow: THREE.Mesh[] = []
+  // whose lane is whose: rail strip color + board labels, picked per frame from ui.me
+  strips: THREE.MeshBasicMaterial[] = []
+  btex = { none: boardTexture(), own: boardTexture('DROP', 'rgba(140,230,107,.8)', 'YOUR CORE'), rival: boardTexture('YOUR ROBOTS LAND HERE', 'rgba(255,196,46,.9)') }
   rv = new Map<number, RobotVis>(); tv = new Map<number, TowerVis>()
   time = 0; shakeAmt = 0
   cam = { x: 5.5, z: 10, dist: 30, tx: 5.5, tz: 10, tdist: 30, ready: false }
@@ -250,16 +254,16 @@ export class Scene3D {
 
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: floorTexture(), roughness: 0.9 }))
     floor.position.set(10, -0.02, 10); s.add(floor)
-    const btex = boardTexture()
     for (let p = 0; p < 2; p++) {
       const ox = p * LANE_GAP
-      const board = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: btex, roughness: 0.8, metalness: 0.1 }))
+      const board = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: this.btex.none, roughness: 0.8, metalness: 0.1 }))
       board.position.set(ox + COLS / 2, 0, ROWS / 2); s.add(board); this.boards.push(board)
       // side rails with hazard caps
       const railMat = new THREE.MeshStandardMaterial({ color: 0x1c2027, flatShading: true, metalness: 0.5, roughness: 0.5 })
+      const stripMat = new THREE.MeshBasicMaterial({ color: 0xb08a20, toneMapped: false }); this.strips.push(stripMat)
       for (const rx of [-0.2, COLS + 0.2]) {
         const rail = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, ROWS + 0.4), railMat); rail.position.set(ox + rx, 0.25, ROWS / 2); s.add(rail)
-        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, ROWS + 0.4), new THREE.MeshBasicMaterial({ color: 0xb08a20, toneMapped: false }))
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.04, ROWS + 0.4), stripMat)
         strip.position.set(ox + rx + (rx < 0 ? 0.17 : -0.17), 0.52, ROWS / 2); s.add(strip)
       }
       const endMat = new THREE.MeshStandardMaterial({ color: 0x14171c, flatShading: true })
@@ -441,6 +445,9 @@ export class Scene3D {
 
     g.lanes.forEach((L, p) => {
       const ox = p * LANE_GAP
+      const mine = ui.me < 0 ? -1 : p === ui.me ? 1 : 0
+      this.strips[p].color.set(mine < 0 ? 0xb08a20 : mine ? COL.hazard : 0xa03848)
+      ;(this.boards[p].material as THREE.MeshStandardMaterial).map = mine < 0 ? this.btex.none : mine ? this.btex.own : this.btex.rival
       ;(this.sealGlow[p].material as THREE.MeshBasicMaterial).opacity = L.sealed ? 0.12 + Math.sin(t * 8) * 0.06 : 0
 
       // towers
@@ -610,7 +617,10 @@ export class Scene3D {
       this.mini.lookAt(other * LANE_GAP + COLS / 2, 0, ROWS / 2)
       this.mini.updateProjectionMatrix()
       r.setScissorTest(true)
-      r.setScissor(m.x, H - m.y - m.h, m.w, m.h); r.setViewport(m.x, H - m.y - m.h, m.w, m.h)
+      // frame in the owner's color (yellow = yours, red = enemy), then the map inset by 2px
+      r.setScissor(m.x, H - m.y - m.h, m.w, m.h)
+      r.setClearColor(other === ui.me ? COL.hazard : COL.rogue); r.clear(); r.setClearColor(0x000000)
+      r.setScissor(m.x + 2, H - m.y - m.h + 2, m.w - 4, m.h - 4); r.setViewport(m.x + 2, H - m.y - m.h + 2, m.w - 4, m.h - 4)
       r.clear()
       r.render(this.scene, this.mini)
       r.setScissorTest(false)
