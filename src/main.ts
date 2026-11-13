@@ -202,6 +202,7 @@ $('lanBtn').onclick = () => {
   }
   ws.onclose = () => { if (net?.ws === ws) { net = null; g = null; lobby('No LAN server here. Start one with "npm run lan" on one computer and open the address it prints on both devices.') } }
 }
+if (import.meta.env.VITE_NO_LAN) $('lanBtn').remove() // static hosting (GitHub Pages) has no relay server
 $('lobbyCancel').onclick = toMenu
 $('watch').onclick = () => { $('end').hidden = true; startReplay() }
 $('next').onclick = () => { if (mode.kind === 'ladder') play(RIVALS[mode.i + 1].st, { kind: 'ladder', i: mode.i + 1 }) }
