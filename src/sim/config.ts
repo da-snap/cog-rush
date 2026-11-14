@@ -47,30 +47,32 @@ export interface TowerDef {
 }
 export interface Branch { key: string; name: string; desc: string }
 
+// Crowd movement retune (Daniel 2026-11-14): every tower's dps x1.5, because grouped sends pass a tower in ~1 s
+// instead of a 6 s line and any-angle routes are 10-20% shorter. Splash unchanged (robots per shell stayed ~2.2).
 export const TOWERS = {
   gatling: {
-    name: 'Gatling', cost: 25, hp: 250, rangeMc: 3000, dps: 15, dmg: 'kinetic', ground: true, air: true, attack: 'single', period: 2,
+    name: 'Gatling', cost: 25, hp: 250, rangeMc: 3000, dps: 22.5, dmg: 'kinetic', ground: true, air: true, attack: 'single', period: 2,
     branches: [{ key: 'pierce', name: 'Armor-piercing', desc: 'Ignores armor type' }, { key: 'overdrive', name: 'Overdrive', desc: '+80% fire rate' }],
   },
   flak: {
-    name: 'Flak', cost: 40, hp: 220, rangeMc: 4000, dps: 50, // balance: GDD 25, but Explosive does 0.5x to Drones (Light), the only air robot
+    name: 'Flak', cost: 40, hp: 220, rangeMc: 4000, dps: 75, // balance: GDD 25, but Explosive does 0.5x to Drones (Light), the only air robot
     dmg: 'explosive', ground: false, air: true, attack: 'splash', period: 10, splashMc: 750,
     branches: [{ key: 'longRange', name: 'Long range', desc: '+50% range' }, { key: 'shrapnel', name: 'Shrapnel', desc: 'Wider splash' }],
   },
   emp: {
-    name: 'EMP', cost: 50, hp: 220, rangeMc: 2500, dps: 5, dmg: 'energy', ground: true, air: true, attack: 'aura', period: 10, slowPct: 40,
+    name: 'EMP', cost: 50, hp: 220, rangeMc: 2500, dps: 7.5, dmg: 'energy', ground: true, air: true, attack: 'aura', period: 10, slowPct: 40,
     branches: [{ key: 'stun', name: 'Stun pulse', desc: 'Stuns robots in range every 5 s' }, { key: 'overload', name: 'Overload', desc: 'Slowed robots take +25% damage' }],
   },
   mortar: {
-    name: 'Mortar', cost: 60, hp: 250, rangeMc: 4000, dps: 18, dmg: 'explosive', ground: true, air: false, attack: 'splash', period: 30, splashMc: 1000,
+    name: 'Mortar', cost: 60, hp: 250, rangeMc: 4000, dps: 27, dmg: 'explosive', ground: true, air: false, attack: 'splash', period: 30, splashMc: 1000,
     branches: [{ key: 'burn', name: 'Burning ground', desc: 'Impact cell burns for 3 s' }, { key: 'cluster', name: 'Cluster shells', desc: '3 smaller impacts' }],
   },
   tesla: {
-    name: 'Tesla', cost: 70, hp: 250, rangeMc: 2500, dps: 15, dmg: 'energy', ground: true, air: true, attack: 'chain', period: 10, chain: 3, chainMc: 1500,
+    name: 'Tesla', cost: 70, hp: 250, rangeMc: 2500, dps: 22.5, dmg: 'energy', ground: true, air: true, attack: 'chain', period: 10, chain: 3, chainMc: 1500,
     branches: [{ key: 'chain5', name: 'Chain 5', desc: 'Chains to 5 targets' }, { key: 'arcFocus', name: 'Arc focus', desc: '+100% damage, chains to 1' }],
   },
   laser: {
-    name: 'Laser', cost: 90, hp: 270, rangeMc: 5000, dps: 30, dmg: 'energy', ground: true, air: false, attack: 'beam', period: 1, beamMc: 400,
+    name: 'Laser', cost: 90, hp: 270, rangeMc: 5000, dps: 45, dmg: 'energy', ground: true, air: false, attack: 'beam', period: 1, beamMc: 400,
     branches: [{ key: 'wide', name: 'Wide beam', desc: 'Wider beam' }, { key: 'melt', name: 'Melt', desc: 'Damage ramps up on the same target' }],
   },
 } satisfies Record<string, TowerDef>
@@ -97,17 +99,18 @@ export interface RobotDef {
   sendCost: number; buildS: number; maxWave: number; factoryCost: number
   leak: number // core damage when it reaches the exit
   towerDps: number // open design gap 1: placeholder damage vs towers (Breach multiplies by 3)
+  radiusMc: number // crowd footprint (Daniel 2026-11-14): 3 Scouts or 2 mid-size fit a 1-cell gap, a Colossus fills it; air ignores it
 }
 // balance vs GDD: Scout 60→40 HP, Drone 120→90, Tank 400→480, Breaker 300→360 (speed decides exposure in a maze)
 export const ROBOTS: Record<RobotKind, RobotDef> = {
-  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, buildS: 1, maxWave: 12, factoryCost: 0, leak: 1, towerDps: 10 },
-  drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, buildS: 3, maxWave: 6, factoryCost: 120, leak: 2, towerDps: 0 },
-  repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10 },
-  shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10 },
-  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 400, speedMcPerS: 800, sendCost: 40, buildS: 5, maxWave: 4, factoryCost: 150, leak: 4, towerDps: 10 },
-  splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, buildS: 5, maxWave: 3, factoryCost: 180, leak: 3, towerDps: 10 },
-  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 300, speedMcPerS: 900, sendCost: 50, buildS: 6, maxWave: 3, factoryCost: 200, leak: 4, towerDps: 20 },
-  colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, buildS: 30, maxWave: 1, factoryCost: 400, leak: 15, towerDps: 40 },
+  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, buildS: 1, maxWave: 12, factoryCost: 0, leak: 1, towerDps: 10, radiusMc: 160 },
+  drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, buildS: 3, maxWave: 6, factoryCost: 120, leak: 2, towerDps: 0, radiusMc: 0 },
+  repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10, radiusMc: 225 },
+  shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10, radiusMc: 225 },
+  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 400, speedMcPerS: 800, sendCost: 40, buildS: 5, maxWave: 4, factoryCost: 150, leak: 4, towerDps: 10, radiusMc: 240 },
+  splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, buildS: 5, maxWave: 3, factoryCost: 180, leak: 3, towerDps: 10, radiusMc: 225 },
+  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 300, speedMcPerS: 900, sendCost: 50, buildS: 6, maxWave: 3, factoryCost: 200, leak: 4, towerDps: 20, radiusMc: 240 },
+  colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, buildS: 30, maxWave: 1, factoryCost: 400, leak: 15, towerDps: 40, radiusMc: 480 },
 }
 export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 
@@ -129,7 +132,6 @@ export const SEND = {
   goldPerIncome: 25, // +1 income per 15 gold of robots released
   burstMin: 6, burstShieldPct: 30, // Overdrive: a release of 6+ robots spawns with a 30% shield
   previewS: 4,
-  gapTicks: 10, // 0.5 s between robots of a released wave
   bountyPct: 25, // to the defender, also for neutral kills (default for gap 2)
   leakPct: 30, // to the sender
   colossusFromS: 300, // default: gate is on sending

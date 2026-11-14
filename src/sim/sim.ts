@@ -34,6 +34,7 @@ export interface Tower {
 export interface Robot {
   id: number; kind: RobotKind; owner: number // -1 = neutral
   x: number; y: number; cx: number; cy: number; hp: number; maxHp: number
+  wp: number // cell it steers for, -1 = pick again (maze changed)
   shield: number; gotShield: boolean
   slow: number; stun: number; amp: number; jam: boolean // status, refreshed every tick by EMPs
 }
@@ -63,6 +64,11 @@ const inLane = (x: number, y: number) => x >= 0 && x < COLS && y >= 0 && y < ROW
 export const buildable = (x: number, y: number) => x >= 0 && x < COLS && y >= SPAWN_ROWS && y < ROWS - EXIT_ROWS
 const center = (c: number) => c * MC + MC / 2
 const DIRS = [[0, 1], [-1, 0], [1, 0], [0, -1]] // fixed order = deterministic tie-break, prefers "down"
+const DIRS8 = [...DIRS, [-1, 1], [1, 1], [-1, -1], [1, -1]]
+const DIAG = 1414 // sqrt(2) * MC
+// a diagonal step may not cut a tower's corner (so 8-way and 4-way connectivity agree, and wouldSeal stays 4-way)
+const diagOk = (towers: (Tower | null)[], x: number, y: number, dx: number, dy: number) => !dx || !dy || (!towers[idx(x + dx, y)] && !towers[idx(x, y + dy)])
+const towerCost = (t: Tower | null) => t ? Math.floor(t.hp / BREACH.hpCostPer) : 0
 export const opponent = (g: Game, p: number) => (p + 1) % g.lanes.length
 export const secs = (g: Game) => g.tick / TICK_HZ
 
@@ -119,7 +125,7 @@ export function newTower(kind: TowerKind, x: number, y: number): Tower {
 
 // --- pathfinding -----------------------------------------------------------
 
-// Dijkstra from the bottom row. open: towers are walls. breach: towers cost by HP.
+// Dijkstra from the bottom row, 8-way (diagonals cost sqrt 2). open: towers are walls. breach: towers cost by HP.
 // ponytail: O(n²) Dijkstra, 220 cells, only runs when the maze changes. Heap if lanes grow a lot.
 export function field(towers: (Tower | null)[], breach: boolean): number[] {
   const dist = Array(COLS * ROWS).fill(INF)
@@ -133,13 +139,14 @@ export function field(towers: (Tower | null)[], breach: boolean): number[] {
     const bx = best % COLS, by = (best / COLS) | 0
     const t = towers[best]
     if (t && !breach) continue
-    const cost = MC + (t ? Math.floor(t.hp / BREACH.hpCostPer) : 0) // cost of stepping INTO `best` from a neighbour
-    for (const [dx, dy] of DIRS) {
+    const cost = towerCost(t) // cost of stepping INTO `best` from a neighbour, on top of the distance
+    for (const [dx, dy] of DIRS8) {
       const nx = bx + dx, ny = by + dy
-      if (!inLane(nx, ny)) continue
+      if (!inLane(nx, ny) || !diagOk(towers, bx, by, dx, dy)) continue
       const n = idx(nx, ny)
       if (towers[n] && !breach) continue
-      if (dist[best] + cost < dist[n]) dist[n] = dist[best] + cost
+      const d = dist[best] + cost + (dx && dy ? DIAG : MC)
+      if (d < dist[n]) dist[n] = d
     }
   }
 }
@@ -171,6 +178,7 @@ function recompute(L: Lane) {
   L.openDist = field(L.towers, false)
   L.breachDist = field(L.towers, true)
   L.sealed = isSealed(L.openDist)
+  for (const r of L.robots) r.wp = -1
 }
 
 export function wouldSeal(L: Lane, x: number, y: number, towers = L.towers): boolean {
@@ -179,14 +187,18 @@ export function wouldSeal(L: Lane, x: number, y: number, towers = L.towers): boo
   return pathLen(t) >= INF
 }
 
-const robotCell = (r: Robot) => idx(Math.floor(r.x / MC), Math.floor(r.y / MC))
+// distance² from a point to tower cell (x, y)'s square
+const toCell2 = (px: number, py: number, x: number, y: number) => {
+  const qx = Math.min(Math.max(px, x * MC), x * MC + MC), qy = Math.min(Math.max(py, y * MC), y * MC + MC)
+  return (px - qx) ** 2 + (py - qy) ** 2
+}
+const onCell = (r: Robot, x: number, y: number) => !ROBOTS[r.kind].air && toCell2(r.x, r.y, x, y) < ROBOTS[r.kind].radiusMc ** 2
 
 export function canBuild(L: Lane, x: number, y: number, kind: TowerKind): string | null {
   if (!buildable(x, y)) return 'Spawn and exit zones are not buildable'
   if (L.towers[idx(x, y)]) return 'Cell is taken'
   if (L.gold < TOWERS[kind].cost) return 'Not enough gold'
-  const i = idx(x, y)
-  if (L.robots.some(r => !ROBOTS[r.kind].air && (robotCell(r) === i || idx(r.cx, r.cy) === i))) return 'A robot is on this cell'
+  if (L.robots.some(r => r.hp > 0 && onCell(r, x, y))) return 'A robot is on this cell'
   return null
 }
 
@@ -204,7 +216,7 @@ export function pathFrom(dist: number[], towers: (Tower | null)[], start = SPAWN
   const out = [start]
   let cur = start
   while (dist[cur] > 0 && out.length < COLS * ROWS) {
-    const nxt = stepFrom(dist, cur)
+    const nxt = stepFrom(dist, towers, cur)
     if (nxt < 0) break
     out.push(nxt)
     if (towers[nxt]) break // path ends at the wall the robots will chew through
@@ -213,14 +225,17 @@ export function pathFrom(dist: number[], towers: (Tower | null)[], start = SPAWN
   return out
 }
 
-function stepFrom(dist: number[], cur: number): number {
+// Next cell downhill: the neighbour on the cheapest way to the exit.
+function stepFrom(dist: number[], towers: (Tower | null)[], cur: number): number {
   const x = cur % COLS, y = (cur / COLS) | 0
-  let best = -1
-  for (const [dx, dy] of DIRS) {
+  let best = -1, bestD = Infinity
+  for (const [dx, dy] of DIRS8) {
     const nx = x + dx, ny = y + dy
-    if (!inLane(nx, ny)) continue
+    if (!inLane(nx, ny) || !diagOk(towers, x, y, dx, dy)) continue
     const n = idx(nx, ny)
-    if (dist[n] < dist[cur] && (best < 0 || dist[n] < dist[best])) best = n
+    if (dist[n] >= INF) continue
+    const d = dist[n] + towerCost(towers[n]) + (dx && dy ? DIAG : MC)
+    if (dist[n] < dist[cur] && d < bestD) { best = n; bestD = d }
   }
   return best
 }
@@ -297,7 +312,7 @@ export function step(g: Game, cmds: Cmd[]): void {
     for (const q of L.queue) if (q.left > 0 && !busy.has(q.kind)) { busy.add(q.kind); q.left-- }
     // released waves land after the preview
     while (L.incoming.length && L.incoming[0].at <= g.tick) L.spawnQueue.push(...L.incoming.shift()!.robots)
-    if (L.spawnQueue.length && g.tick % SEND.gapTicks === 0) spawn(g, L, L.spawnQueue.shift()!)
+    if (L.spawnQueue.length) { spawnGroup(g, L, L.spawnQueue); L.spawnQueue = [] }
 
     applyStatus(L)
     moveRobots(g, L)
@@ -313,11 +328,39 @@ export function step(g: Game, cmds: Cmd[]): void {
 
 export function spawn(g: Game, L: Lane, s: Spawn, cx = SPAWN % COLS, cy = 0): Robot {
   const r: Robot = {
-    id: g.nextId++, kind: s.kind, owner: s.owner, x: center(cx), y: center(cy), cx, cy, hp: s.hp, maxHp: s.hp,
+    id: g.nextId++, kind: s.kind, owner: s.owner, x: center(cx), y: center(cy), cx, cy, wp: -1, hp: s.hp, maxHp: s.hp,
     shield: s.shield ?? 0, gotShield: !!s.shield, slow: 0, stun: 0, amp: 100, jam: false,
   }
   L.robots.push(r)
   return r
+}
+
+// A whole release (and a neutral wave) lands at once, packed in shelves across the spawn zone, centred.
+// ponytail: shelves past the 2 spawn rows are clamped into them and overlap; the overlap rule in move() lets them spread out.
+function spawnGroup(g: Game, L: Lane, group: Spawn[]) {
+  const GAP = 40, W = COLS * MC - MC // half a cell of margin each side
+  const size = (s: Spawn) => 2 * Math.max(ROBOTS[s.kind].radiusMc, 200) + GAP // drones get a slot too, they fly their own column
+  const shelves: Spawn[][] = [[]]
+  let used = 0
+  for (const s of group) {
+    if (used + size(s) > W && shelves[shelves.length - 1].length) { shelves.push([]); used = 0 }
+    shelves[shelves.length - 1].push(s)
+    used += size(s)
+  }
+  let y = 0
+  for (const sh of shelves) {
+    const h = Math.max(...sh.map(size))
+    let x = (COLS * MC - sh.reduce((a, s) => a + size(s), 0)) / 2
+    for (const s of sh) {
+      const r = spawn(g, L, s)
+      const rad = ROBOTS[s.kind].radiusMc
+      r.x = Math.floor(x + size(s) / 2)
+      r.y = Math.min(Math.floor(y + h / 2), SPAWN_ROWS * MC - Math.max(rad, 1))
+      r.cx = Math.floor(r.x / MC); r.cy = Math.floor(r.y / MC)
+      x += size(s)
+    }
+    y += h
+  }
 }
 
 function apply(g: Game, c: Cmd) {
@@ -426,10 +469,86 @@ function applyStatus(L: Lane) {
   }
 }
 
+// --- crowd movement ------------------------------------------------------
+// Robots are circles (ROBOTS[k].radiusMc) on a continuous floor; towers are solid squares.
+// Each robot steers for a waypoint cell on its field and pulls it forward while the straight line there is clear
+// (any-angle routes). It never moves deeper into another robot, so it queues behind or slips past through a gap.
+// Plain IEEE double math (+ - * / sqrt), rounded back to integers every tick: deterministic everywhere.
+
+// Does the segment a→b come within `rad` of a tower (square grown by rad, conservative at the corners)? `skip`: a tower cell to ignore.
+function lineClear(L: Lane, ax: number, ay: number, bx: number, by: number, rad: number, skip = -1): boolean {
+  const x0 = Math.max(0, Math.floor((Math.min(ax, bx) - rad) / MC)), x1 = Math.min(COLS - 1, Math.floor((Math.max(ax, bx) + rad) / MC))
+  const y0 = Math.max(0, Math.floor((Math.min(ay, by) - rad) / MC)), y1 = Math.min(ROWS - 1, Math.floor((Math.max(ay, by) + rad) / MC))
+  const dx = bx - ax, dy = by - ay
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const i = idx(x, y)
+    if (i === skip || !L.towers[i]) continue
+    // slab test against [x*MC - rad, x*MC + MC + rad] × the same in y; touching the edge is allowed
+    let t0 = 0, t1 = 1
+    const lo = [x * MC - rad, y * MC - rad], hi = [x * MC + MC + rad, y * MC + MC + rad], p = [ax, ay], d = [dx, dy]
+    let hit = true
+    for (let k = 0; k < 2 && hit; k++) {
+      if (d[k] === 0) { if (p[k] <= lo[k] || p[k] >= hi[k]) hit = false; continue }
+      let u = (lo[k] - p[k]) / d[k], v = (hi[k] - p[k]) / d[k]
+      if (u > v) [u, v] = [v, u]
+      t0 = Math.max(t0, u); t1 = Math.min(t1, v)
+      if (t0 >= t1) hit = false
+    }
+    if (hit) return false
+  }
+  return true
+}
+
+// Push a circle out of the lane edges and any tower square it overlaps (this is what makes robots slide along walls).
+function unwall(L: Lane, x: number, y: number, rad: number): [number, number] {
+  for (let pass = 0; pass < 2; pass++) {
+    x = Math.min(Math.max(x, rad), COLS * MC - rad)
+    y = Math.min(Math.max(y, rad), ROWS * MC - 1)
+    const cx = Math.floor(x / MC), cy = Math.floor(y / MC)
+    for (let ty = cy - 1; ty <= cy + 1; ty++) for (let tx = cx - 1; tx <= cx + 1; tx++) {
+      if (!inLane(tx, ty) || !L.towers[idx(tx, ty)]) continue
+      const qx = Math.min(Math.max(x, tx * MC), tx * MC + MC), qy = Math.min(Math.max(y, ty * MC), ty * MC + MC)
+      const ddx = x - qx, ddy = y - qy, d2 = ddx * ddx + ddy * ddy
+      if (d2 >= rad * rad) continue
+      if (d2 === 0) { // centre inside the square: out through the nearest side
+        const out = [[tx * MC - rad - x, 0], [tx * MC + MC + rad - x, 0], [0, ty * MC - rad - y], [0, ty * MC + MC + rad - y]]
+        out.sort((a, b) => Math.abs(a[0] + a[1]) - Math.abs(b[0] + b[1]))
+        x += out[0][0]; y += out[0][1]
+      } else {
+        const d = Math.sqrt(d2)
+        x = Math.round(qx + ddx * rad / d); y = Math.round(qy + ddy * rad / d)
+      }
+    }
+  }
+  return [x, y]
+}
+
+// Would r at (x, y) be deeper inside some other ground robot than it is now? Overlaps that already exist
+// (a fresh group, Splitter pieces) may stay or shrink, never grow.
+// ponytail: O(n²) per candidate move; bucket robots by cell if lanes get crowded enough to show in a profile.
+function bumps(L: Lane, r: Robot, x: number, y: number): boolean {
+  const rad = ROBOTS[r.kind].radiusMc
+  for (const o of L.robots) {
+    if (o === r || o.hp <= 0 || ROBOTS[o.kind].air) continue
+    const s = rad + ROBOTS[o.kind].radiusMc
+    const dx = x - o.x, dy = y - o.y
+    if (dx >= s || -dx >= s || dy >= s || -dy >= s) continue
+    const d2 = dx * dx + dy * dy
+    if (d2 < s * s && d2 < (r.x - o.x) ** 2 + (r.y - o.y) ** 2) return true
+  }
+  return false
+}
+
+// Straight at the waypoint first, then veering 30° and 60° to either side to slip past whoever is in the way.
+const VEER = [[1, 0], [0.8660254037844386, 0.5], [0.8660254037844386, -0.5], [0.5, 0.8660254037844386], [0.5, -0.8660254037844386]]
+const TOUCH_MC = 50 // a robot this close to a wall is touching it
+
 function moveRobots(g: Game, L: Lane) {
   let changed = false
-  for (const r of L.robots) {
-    if (r.hp <= 0 || r.stun > 0) continue
+  // the robot closest to the exit moves first, so the ones behind see where it went
+  const order = L.robots.filter(r => r.hp > 0).sort((a, b) => progress(L, a) - progress(L, b) || a.id - b.id)
+  for (const r of order) {
+    if (r.stun > 0) continue
     const def = ROBOTS[r.kind]
     const cur = idx(r.cx, r.cy)
     const trapped = !def.air && L.openDist[cur] >= INF
@@ -442,24 +561,45 @@ function moveRobots(g: Game, L: Lane) {
       }
     }
 
-    const tx = center(r.cx), ty = center(r.cy)
     const speed = Math.floor(def.speedMcPerS * (L.sealed ? BREACH.speedPct : 100) / 100 * (100 - r.slow) / 100 / TICK_HZ)
-    const dx = tx - r.x, dy = ty - r.y
-    if (Math.abs(dx) + Math.abs(dy) > speed) { // moves are axis-aligned, so manhattan = euclidean
-      r.x += Math.sign(dx) * Math.min(speed, Math.abs(dx))
-      r.y += Math.sign(dy) * Math.min(speed, Math.abs(dy))
+    if (def.air) { // Drones fly straight to the exit
+      r.y = Math.min(r.y + speed, center(ROWS - 1))
+      r.cy = Math.floor(r.y / MC)
+      if (r.y >= center(ROWS - 1)) leak(g, L, r)
       continue
     }
-    r.x = tx; r.y = ty
-    if (r.cy === ROWS - 1) { leak(g, L, r); continue }
-    if (def.air) { r.cy++; continue } // Drones fly straight to the exit
+
     // Open lane: follow the wall-respecting field. Sealed lane, or a robot boxed into a pocket
-    // (open design gap 4): follow the HP-weighted field and chew through whatever tower is next.
-    const nxt = stepFrom(trapped ? L.breachDist : L.openDist, cur)
-    if (nxt < 0) continue
-    const wall = L.towers[nxt]
-    if (wall) { changed = hitTower(g, L, wall, r, L.sealed) || changed; continue }
-    r.cx = nxt % COLS; r.cy = (nxt / COLS) | 0
+    // (open design gap 4): follow the HP-weighted field and chew through whatever tower is next,
+    // but only while touching it, so the rest of the crowd waits its turn.
+    const dist = trapped ? L.breachDist : L.openDist
+    const rad = def.radiusMc
+    if (r.wp < 0) r.wp = cur
+    for (let k = 0; k < 4 && !L.towers[r.wp] && dist[r.wp] > 0; k++) {
+      const n = stepFrom(dist, L.towers, r.wp)
+      if (n < 0) break
+      const reached = (center(r.wp % COLS) - r.x) ** 2 + (center((r.wp / COLS) | 0) - r.y) ** 2 <= speed * speed
+      if (!reached && !lineClear(L, r.x, r.y, center(n % COLS), center((n / COLS) | 0), rad, n)) break
+      r.wp = n
+    }
+    const wx = r.wp % COLS, wy = (r.wp / COLS) | 0
+    const wall = L.towers[r.wp]
+    // breaching: chew the wall it's heading for once it gets there; the crowd behind waits its turn
+    if (wall && toCell2(r.x, r.y, wx, wy) <= (rad + TOUCH_MC) ** 2) { changed = hitTower(g, L, wall, r, L.sealed) || changed; continue }
+
+    const dx = center(wx) - r.x, dy = center(wy) - r.y
+    const d = Math.sqrt(dx * dx + dy * dy)
+    if (d > 0) {
+      const vx = dx * Math.min(speed, d) / d, vy = dy * Math.min(speed, d) / d
+      for (const [c, sn] of VEER) {
+        const [qx, qy] = unwall(L, Math.round(r.x + vx * c - vy * sn), Math.round(r.y + vx * sn + vy * c), rad)
+        if ((qx === r.x && qy === r.y) || bumps(L, r, qx, qy)) continue
+        r.x = qx; r.y = qy
+        break
+      }
+    }
+    r.cx = Math.floor(r.x / MC); r.cy = Math.floor(r.y / MC)
+    if (r.cy === ROWS - 1) leak(g, L, r)
   }
   if (changed) recompute(L)
 }

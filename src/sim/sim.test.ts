@@ -100,7 +100,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   assert.equal(t.maxHp, 390 * MC)
   const st = towerStats(t)
   assert.equal(st.rangeMc, 3630)
-  assert.equal(st.dps, Math.floor(15 * 256 / 100 * 180 / 100 * MC))
+  assert.equal(st.dps, Math.floor(22.5 * 256 / 100 * 180 / 100 * MC))
   const gold = L.gold
   step(g, at(0, [{ t: 'sell', x: 3, y: 5 }]))
   assert.equal(L.gold - gold, 75)
@@ -114,10 +114,10 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
     step(g, at(0, [{ t: 'build', x: 5, y: ty, kind }]))
     const t = L.towers[ty * COLS + 5]!
     if (branch) { t.level = 3; t.branch = branch }
-    const rs = robots.map(([k, x, y]) => put(g, L, k, x, y))
+    const rs = robots.map(([k, x, y]) => put(g, L, k, x, y, 10_000 * MC)) // tough enough that nobody dies and the aim never moves
     for (const r of rs) r.stun = 1000 // hold still
     for (let i = 0; i < 20; i++) quiet(g)
-    return rs.map(r => r.hp < 100 * MC)
+    return rs.map(r => r.hp < 10_000 * MC)
   }
   const column: [RobotKind, number, number][] = [['scout', 5, 8], ['scout', 5, 7], ['scout', 5, 6], ['scout', 5, 5]]
   assert.deepEqual(near('gatling', null, [['scout', 5, 8], ['scout', 0, 3]]), [true, false], 'single target in range only')
@@ -269,6 +269,62 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   damage(g, L, b, 10 * MC, 'energy', false, true)
   assert.equal(b.shield, 50 * MC)
   assert.ok(b.hp < hp)
+}
+
+// 17. Crowd: a group lands at once, nobody walks through anybody,
+// a Colossus can't be passed in one, routes cut diagonals, and only robots touching a sealed wall chew it.
+{
+  const corridor = (lead: RobotKind) => {
+    const { g, L } = game()
+    L.gold = 1e6
+    const cmds: C[] = []
+    for (let y = 6; y <= 14; y++) for (let x = 0; x < COLS; x++) if (x !== 5) cmds.push({ t: 'build', x, y, kind: 'gatling' })
+    step(g, at(0, cmds))
+    for (const t of L.towers) if (t) t.cd = 1e9
+    put(g, L, lead, 5, 8, 1e12)
+    for (let i = 0; i < 3; i++) put(g, L, 'scout', 4.6 + i * 0.4, 3, 1e12) // right behind it
+    const out: RobotKind[] = [], gone = new Set<number>()
+    let worst = 0
+    for (let i = 0; i < 60 * TICK_HZ && out.length < 4; i++) {
+      quiet(g)
+      for (const r of L.robots) if (r.y >= 15 * MC && !gone.has(r.id)) { gone.add(r.id); out.push(r.kind) } // left the corridor
+      const rs = L.robots.filter(r => r.hp > 0)
+      for (const a of rs) for (const b of rs) if (a.id < b.id) worst = Math.max(worst, ROBOTS[a.kind].radiusMc + ROBOTS[b.kind].radiusMc - Math.hypot(a.x - b.x, a.y - b.y))
+    }
+    return { out, worst }
+  }
+  const col = corridor('colossus')
+  assert.equal(col.out[0], 'colossus', 'nobody overtakes a Colossus in a 1-cell gap')
+  assert.ok(col.worst <= 1, `no robot walks into another (overlap ${col.worst})`)
+
+  // open lane: a group of 12 Scouts spawns in one tick and runs 18 rows straight down in ~9 s
+  const { g, L } = game()
+  for (let i = 0; i < 12; i++) L.spawnQueue.push({ kind: 'scout', hp: 1e12, owner: -1 })
+  quiet(g)
+  assert.equal(L.robots.length, 12, 'whole group lands at once')
+  // one tower off the straight line: the route bends at an angle, not in right-angle steps
+  L.gold = 1000
+  quiet(g, at(0, [{ t: 'build', x: 5, y: 10, kind: 'gatling' }]))
+  L.towers[10 * COLS + 5]!.cd = 1e9
+  let left = 0
+  for (let i = 0; i < 15 * TICK_HZ && L.robots.length; i++) { quiet(g); left = L.robots.length }
+  assert.equal(left, 0, 'all 12 got past one tower within 15 s')
+
+  // a sealed 1-cell corridor: 12 Tanks queue in it, and only the front one reaches the wall to chew it
+  const chew = (n: number) => {
+    const { g, L } = game()
+    L.gold = 1e6
+    const cmds: C[] = []
+    for (let y = 6; y <= 15; y++) for (let x = 0; x < COLS; x++) if (x !== 5 || y === 15) cmds.push({ t: 'build', x, y, kind: 'gatling' })
+    step(g, at(0, cmds))
+    for (const t of L.towers) if (t) { t.cd = 1e9; t.hp = t.maxHp = 1e12 } // unbreakable, so we can sum the bites
+    for (let i = 0; i < n; i++) L.spawnQueue.push({ kind: 'tank', hp: 1e12, owner: -1 })
+    for (let i = 0; i < 30 * TICK_HZ; i++) quiet(g)
+    return L.towers.reduce((a, t) => a + (t ? t.maxHp - t.hp : 0), 0)
+  }
+  const one = chew(1), twelve = chew(12)
+  assert.ok(one > 0, 'a Tank chews a sealed wall')
+  assert.ok(twelve < one * 2, `the queue behind doesn't chew (1 Tank ${one}, 12 Tanks ${twelve})`)
 }
 
 console.log('sim ok')
