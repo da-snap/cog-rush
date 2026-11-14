@@ -1,8 +1,8 @@
 // 3D view of the match (three.js). Pure view: reads sim state and events, never changes them.
 import * as THREE from 'three'
-import { COLS, EXIT_ROWS, MC, ROBOTS, ROWS, SPAWN_ROWS, TOWERS, type RobotKind, type TowerKind } from './sim/config.ts'
+import { AURA, COLS, EXIT_ROWS, MC, ROBOTS, ROWS, SPAWN_ROWS, TOWERS, type RobotKind, type TowerKind } from './sim/config.ts'
 import { INF, field, pathFrom, towerStats, wouldSeal, type Game, type Tower } from './sim/sim.ts'
-import { BARREL_AXIS, COLOSSUS_HIP, PIVOT_AT, ROBOT_MODELS, TOWER_MODELS, type Part, type Pivot } from './models.ts'
+import { BARREL_AXIS, PIVOT_AT, RIG, ROBOT_MODELS, TOWER_MODELS, merge, type Part, type Pivot } from './models.ts'
 import * as sfx from './audio.ts'
 
 // design-system colors
@@ -11,6 +11,8 @@ const COL = {
   kinetic: 0xd9dee5, explosive: 0xff6b2c, energy: 0x3be3cf,
 }
 const DMG = { kinetic: COL.kinetic, explosive: COL.explosive, energy: COL.energy }
+const MEDIC_AURA = 0x8ce66b
+const dim = (c: number, k: number) => new THREE.Color(c).multiplyScalar(k).getHex()
 export const LANE_GAP = 14 // world units between lane origins
 const ROBOT_SCALE: Record<RobotKind, number> = { scout: 1.4, drone: 1.3, repair: 1.3, shield: 1.3, tank: 1.25, splitter: 1.3, breaker: 1.25, colossus: 1.1 }
 const MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(screen.width, screen.height) < 600
@@ -33,7 +35,11 @@ class Batch<K extends string> {
   meshes = new Map<K, { part: Part; mesh: THREE.InstancedMesh; n: number }[]>()
   constructor(scene: THREE.Scene, defs: Record<K, Part[]>, cap: number) {
     for (const k of Object.keys(defs) as K[]) {
-      this.meshes.set(k, defs[k].map(part => {
+      // parts with the same pivot, color and glow become one mesh: detail costs no draw calls
+      const groups = new Map<string, Part[]>()
+      for (const pt of defs[k]) { const key = `${pt.pivot}|${pt.color}|${!!pt.glow}|${pt.off}`; groups.set(key, [...groups.get(key) ?? [], pt]) }
+      const parts = [...groups.values()].map(g => g.length === 1 ? g[0] : { ...g[0], geo: merge(...g.map(x => x.geo)) })
+      this.meshes.set(k, parts.map(part => {
         const mesh = new THREE.InstancedMesh(part.geo, part.glow ? glowMat : litMat, cap)
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
         mesh.setColorAt(0, _c.set(0xffffff))
@@ -49,7 +55,8 @@ class Batch<K extends string> {
   add(kind: K, root: THREE.Matrix4, pose: (pv: Pivot) => THREE.Matrix4, color: (pc: Part['color']) => number, flash: number) {
     for (const b of this.meshes.get(kind)!) {
       if (b.n >= b.mesh.instanceMatrix.count) continue
-      b.mesh.setMatrixAt(b.n, _m2.multiplyMatrices(root, pose(b.part.pivot)))
+      const off = b.part.off
+      b.mesh.setMatrixAt(b.n, off ? _m2.copy(root).multiply(_m.makeTranslation(...off)).multiply(pose(b.part.pivot)) : _m2.multiplyMatrices(root, pose(b.part.pivot)))
       _c.set(color(b.part.color))
       if (flash > 0) _c.lerp(new THREE.Color(0xffffff), flash)
       b.mesh.setColorAt(b.n, _c)
@@ -59,6 +66,7 @@ class Batch<K extends string> {
   end() {
     for (const list of this.meshes.values()) for (const b of list) {
       b.mesh.count = b.n
+      b.mesh.visible = b.n > 0
       b.mesh.instanceMatrix.needsUpdate = true
       if (b.mesh.instanceColor) b.mesh.instanceColor.needsUpdate = true
     }
@@ -132,8 +140,8 @@ class Bolts {
     this.mesh.frustumCulled = false
     scene.add(this.mesh)
   }
-  add(a: THREE.Vector3, b: THREE.Vector3, w: number, color: number, life: number) {
-    if (this.items.length < this.mesh.instanceMatrix.count) this.items.push({ a, b, w, color, t: life, life })
+  add(a: THREE.Vector3, b: THREE.Vector3, w: number, color: number, life: number, bright = 1) {
+    if (this.items.length < this.mesh.instanceMatrix.count) this.items.push({ a, b, w, color: bright === 1 ? color : _c.set(color).multiplyScalar(bright).getHex(), t: life, life })
   }
   update(dt: number) {
     this.items = this.items.filter(it => (it.t -= dt) > 0)
@@ -151,27 +159,64 @@ class Bolts {
   }
 }
 
-class Rings {
+/** Instanced shapes that grow from r0 to r1 and fade out: shock rings, blast domes, ember glows. */
+class Fades {
   mesh: THREE.InstancedMesh
-  items: { x: number; z: number; r0: number; r1: number; color: number; t: number; life: number }[] = []
-  constructor(scene: THREE.Scene, cap: number) {
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
-    this.mesh = new THREE.InstancedMesh(new THREE.RingGeometry(0.9, 1, 32).rotateX(-Math.PI / 2), mat, cap)
+  items: { x: number; y: number; z: number; r0: number; r1: number; sy: number; color: number; t: number; life: number }[] = []
+  constructor(scene: THREE.Scene, geo: THREE.BufferGeometry, cap: number, opacity = 0.7) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
+    this.mesh = new THREE.InstancedMesh(geo, mat, cap)
     this.mesh.setColorAt(0, _c.set(0xffffff))
     this.mesh.frustumCulled = false
     scene.add(this.mesh)
   }
-  add(x: number, z: number, r0: number, r1: number, color: number, life: number) {
-    if (this.items.length < this.mesh.instanceMatrix.count) this.items.push({ x, z, r0, r1, color, t: life, life })
+  add(x: number, z: number, r0: number, r1: number, color: number, life: number, y = 0.06, sy = 1) {
+    if (this.items.length < this.mesh.instanceMatrix.count) this.items.push({ x, y, z, r0, r1, sy, color, t: life, life })
   }
   update(dt: number) {
     this.items = this.items.filter(it => (it.t -= dt) > 0)
     this.items.forEach((it, i) => {
-      const k = 1 - it.t / it.life, r = it.r0 + (it.r1 - it.r0) * (1 - (1 - k) ** 2)
-      this.mesh.setMatrixAt(i, _m.makeScale(r, 1, r).setPosition(it.x, 0.06, it.z))
-      this.mesh.setColorAt(i, _c.set(it.color).multiplyScalar(1 - k))
+      const k = 1 - it.t / it.life, r = it.r0 + (it.r1 - it.r0) * (1 - (1 - k) ** 3)
+      this.mesh.setMatrixAt(i, _m.makeScale(r, r * it.sy, r).setPosition(it.x, it.y, it.z))
+      this.mesh.setColorAt(i, _c.set(it.color).multiplyScalar((1 - k) ** 1.5))
     })
     this.mesh.count = this.items.length
+    this.mesh.visible = this.items.length > 0
+    this.mesh.instanceMatrix.needsUpdate = true
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true
+  }
+}
+
+/** Projectiles in flight. The sim hits instantly; this only draws the trip (render-only).
+ *  ponytail: a robot killed by a shell vanishes when the sim says so, which can be a beat before the shell lands. */
+class Shots {
+  mesh: THREE.InstancedMesh
+  items: { a: THREE.Vector3; b: THREE.Vector3; t: number; life: number; arc: number; w: number; len: number; color: number; trail: number; hit: () => void }[] = []
+  constructor(scene: THREE.Scene, cap: number) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })
+    this.mesh = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.5, 0).scale(1, 1, 1), mat, cap)
+    this.mesh.setColorAt(0, _c.set(0xffffff))
+    this.mesh.frustumCulled = false
+    scene.add(this.mesh)
+  }
+  add(a: THREE.Vector3, b: THREE.Vector3, life: number, o: { arc?: number; w: number; len: number; color: number; trail?: number }, hit: () => void) {
+    if (this.items.length >= this.mesh.instanceMatrix.count) return hit()
+    this.items.push({ a, b, t: 0, life, arc: o.arc ?? 0, w: o.w, len: o.len, color: o.color, trail: o.trail ?? 0, hit })
+  }
+  at(it: Shots['items'][number], k: number, out: THREE.Vector3) { return out.lerpVectors(it.a, it.b, k).setY(it.a.y + (it.b.y - it.a.y) * k + it.arc * 4 * k * (1 - k)) }
+  update(dt: number, parts: Particles) {
+    const up = new THREE.Vector3(0, 1, 0), p0 = new THREE.Vector3(), p1 = new THREE.Vector3()
+    this.items = this.items.filter(it => { it.t += dt; if (it.t < it.life) return true; it.hit(); return false })
+    this.items.forEach((it, i) => {
+      const k = it.t / it.life
+      this.at(it, k, p0); this.at(it, Math.min(1, k + 0.02), p1)
+      _q.setFromUnitVectors(up, p1.sub(p0).normalize())
+      this.mesh.setMatrixAt(i, _m.compose(p0, _q, _s.set(it.w, it.len, it.w)))
+      this.mesh.setColorAt(i, _c.set(it.color))
+      if (it.trail && Math.random() < it.trail) parts.emit(p0.x, p0.y, p0.z, 1, 0x555b63, 0.15, 0.5, 0.22, 0.3, 0)
+    })
+    this.mesh.count = this.items.length
+    this.mesh.visible = this.items.length > 0
     this.mesh.instanceMatrix.needsUpdate = true
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true
   }
@@ -219,7 +264,7 @@ function floorTexture() {
 // --- the scene ---------------------------------------------------------------------
 
 interface RobotVis { yaw: number; phase: number; x: number; z: number; hp: number; flash: number; lane: number; kind: RobotKind; owner: number }
-interface TowerVis { yaw: number; want: number; recoil: number; spin: number; spinV: number; born: number; hp: number; flash: number; x: number; z: number; color: number; lost: boolean }
+interface TowerVis { yaw: number; want: number; recoil: number; spin: number; spinV: number; born: number; hp: number; flash: number; x: number; z: number; color: number; lost: boolean; pulseAt: number }
 
 export class Scene3D {
   renderer: THREE.WebGLRenderer
@@ -227,7 +272,8 @@ export class Scene3D {
   camera = new THREE.PerspectiveCamera(38, 1, 0.1, 400)
   mini = new THREE.OrthographicCamera(-6, 6, 11, -11, 0.1, 100)
   towers: Batch<TowerKind>; robots: Batch<RobotKind>
-  parts: Particles; bolts: Bolts; rings: Rings
+  parts: Particles; bolts: Bolts; rings: Fades; blasts: Fades; embers: Fades; shots: Shots
+  fields: THREE.InstancedMesh; marks: THREE.InstancedMesh // per-frame: slow fields, burning cells / status + aura rings
   shadows: THREE.InstancedMesh; bars: THREE.InstancedMesh; chevrons: THREE.InstancedMesh
   ghost: THREE.InstancedMesh; range: THREE.Mesh; rangeFill: THREE.Mesh; selRing: THREE.Mesh
   boards: THREE.Mesh[] = []; sealGlow: THREE.Mesh[] = []
@@ -277,7 +323,17 @@ export class Scene3D {
 
     this.towers = new Batch(s, TOWER_MODELS, COLS * ROWS * 2)
     this.robots = new Batch(s, ROBOT_MODELS, 260)
-    this.parts = new Particles(s); this.bolts = new Bolts(s, 400); this.rings = new Rings(s, 80)
+    this.parts = new Particles(s); this.bolts = new Bolts(s, 400)
+    this.rings = new Fades(s, new THREE.RingGeometry(0.9, 1, 32).rotateX(-Math.PI / 2), 80)
+    this.blasts = new Fades(s, new THREE.SphereGeometry(1, 12, 8), 60, 0.55)
+    this.embers = new Fades(s, new THREE.CircleGeometry(1, 16).rotateX(-Math.PI / 2), 60, 0.5)
+    this.shots = new Shots(s, MOBILE ? 160 : 320)
+    const decal = (geo: THREE.BufferGeometry, cap: number) => {
+      const m = new THREE.InstancedMesh(geo.rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }), cap)
+      m.setColorAt(0, _c.set(0xffffff)); m.frustumCulled = false; s.add(m); return m
+    }
+    this.fields = decal(new THREE.CircleGeometry(1, 40), 120)
+    this.marks = decal(new THREE.RingGeometry(0.94, 1, 40), 400)
 
     const sh = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false })
     this.shadows = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 12).rotateX(-Math.PI / 2), sh, 520); this.shadows.frustumCulled = false; s.add(this.shadows)
@@ -361,20 +417,72 @@ export class Scene3D {
     for (const e of g.events) {
       const ox = e.p * LANE_GAP
       if (e.t === 'fx') {
-        const a = new THREE.Vector3(ox + e.x1 / MC, 0.55, e.y1 / MC), b = new THREE.Vector3(ox + e.x2 / MC, 0.35, e.y2 / MC)
-        const tw = g.lanes[e.p].towers[Math.floor(e.y1 / MC) * COLS + Math.floor(e.x1 / MC)]
+        const L = g.lanes[e.p]
+        const tw = e.x1 % MC === MC / 2 && e.y1 % MC === MC / 2 ? L.towers[Math.floor(e.y1 / MC) * COLS + Math.floor(e.x1 / MC)] : null
         const v = tw && this.tv.get(tw.id)
-        if (v) { v.want = Math.atan2(b.x - a.x, b.z - a.z); v.recoil = 1; v.spinV = 30 }
-        const c = DMG[TOWERS[e.tower].dmg]
-        if (e.k === 'line' && e.tower === 'tesla') this.lightning(a.setY(0.7), b, c)
-        else if (e.k === 'line') { this.bolts.add(a, b, 0.03, c, 0.07); if (Math.random() < 0.3) this.parts.emit(a.x, a.y, a.z, 2, 0xffe08a, 2, 0.1, 0.12, 0, 0) }
-        else if (e.k === 'beam') this.bolts.add(a, new THREE.Vector3(ox + e.x2 / MC, 0.35, e.y2 / MC), Math.max(0.04, e.r / MC / 2), c, 0.08)
-        else if (e.k === 'boom') {
-          this.bolts.add(a, b, 0.05, c, 0.1)
-          this.parts.emit(b.x, 0.3, b.z, 10, c, 3, 0.45, 0.25, 1)
-          this.parts.emit(b.x, 0.2, b.z, 4, 0x555b63, 0.8, 0.9, 0.5, 0.6, -0.5)
-          this.rings.add(b.x, b.z, 0.1, e.r / MC, c, 0.35)
-        } else this.rings.add(a.x, a.z, 0.2, e.r / MC, c, 0.5)
+        // shots start at the muzzle (towers) or the robot a chain jumped from; end at the target's body height
+        const a = new THREE.Vector3(ox + e.x1 / MC, tw ? 0.55 : this.bodyY(g, e.p, e.x1, e.y1), e.y1 / MC)
+        const b = new THREE.Vector3(ox + e.x2 / MC, this.bodyY(g, e.p, e.x2, e.y2), e.y2 / MC)
+        if (v && e.k !== 'pulse') { v.want = Math.atan2(b.x - a.x, b.z - a.z); v.recoil = 1; v.spinV = 30 }
+        const c = DMG[TOWERS[e.tower].dmg], r = e.r / MC
+        const muzzle = (len: number) => { const d = _v.set(b.x - a.x, 0, b.z - a.z); const l = d.length() || 1; return a.clone().addScaledVector(d, len / l) }
+        switch (e.tower) {
+          case 'gatling': {
+            const m = muzzle(0.42)
+            if (Math.random() < 0.5) this.parts.emit(m.x, m.y, m.z, 2, 0xffe08a, 2, 0.08, 0.14, 0, 0)
+            this.shots.add(m, b, Math.max(0.04, m.distanceTo(b) / 40), { w: 0.05, len: 0.45, color: 0xffe08a }, () => {
+              this.parts.emit(b.x, b.y, b.z, 3, c, 2.5, 0.18, 0.1, 0.5, 6)
+            })
+            break
+          }
+          case 'flak': {
+            const m = muzzle(0.3).setY(0.75)
+            this.parts.emit(m.x, m.y, m.z, 3, 0xffb347, 1.5, 0.12, 0.2, 0.5, 0)
+            this.shots.add(m, b, 0.18, { w: 0.09, len: 0.22, color: 0xffb347, trail: 0.6 }, () => {
+              this.blasts.add(b.x, b.z, 0.1, r * 0.7, dim(c, 0.45), 0.25, b.y)
+              this.blasts.add(b.x, b.z, 0.05, 0.25, 0xffffff, 0.1, b.y) // hot core
+              this.parts.emit(b.x, b.y, b.z, 12, c, 3.5, 0.35, 0.2, 0, 2)
+              this.parts.emit(b.x, b.y, b.z, 5, 0x555b63, 0.6, 0.9, 0.45, 0.2, -0.3)
+              this.rings.add(b.x, b.z, 0.1, r, c, 0.35) // splash footprint on the ground
+            })
+            break
+          }
+          case 'mortar': {
+            const m = a.clone().setY(0.65), land = b.clone().setY(0.1)
+            this.parts.emit(m.x, m.y, m.z, 4, 0x555b63, 0.8, 0.6, 0.35, 1, -0.3)
+            this.shots.add(m, land, 0.4 + m.distanceTo(land) * 0.03, { arc: 1.6 + m.distanceTo(land) * 0.25, w: 0.13, len: 0.2, color: 0xff8a3c, trail: 0.9 }, () => {
+              this.blasts.add(land.x, land.z, 0.2, r * 0.9, dim(c, 0.45), 0.3, 0, 0.7)
+              this.rings.add(land.x, land.z, 0.1, r, c, 0.4)
+              this.embers.add(land.x, land.z, r * 0.5, r * 0.6, dim(COL.explosive, 0.5), 1.2, 0.03)
+              this.parts.emit(land.x, 0.3, land.z, 14, c, 3.5, 0.45, 0.25, 1.5)
+              this.parts.emit(land.x, 0.2, land.z, 6, 0x555b63, 0.8, 1.0, 0.5, 0.6, -0.5)
+              this.parts.emit(land.x, 0.2, land.z, 6, 0x2a3038, 2.5, 0.8, 0.12, 2.5, 8) // dirt
+              if (!quiet && this.hearable(ui, e.p)) this.shake(0.04)
+            })
+            break
+          }
+          case 'tesla': this.lightning(tw ? a.setY(0.75) : a, b, c); break
+          case 'laser': {
+            const m = muzzle(0.5).setY(0.47)
+            this.bolts.add(m, b, Math.max(0.05, r / 2), c, 0.08, 0.35)
+            this.bolts.add(m, b, 0.03, 0xffffff, 0.08)
+            if (Math.random() < 0.3) this.parts.emit(m.x, m.y, m.z, 1, c, 0.5, 0.15, 0.25, 0, 0)
+            // sparks where the beam cuts robots (sim already hit them this tick)
+            const dx = e.x2 - e.x1, dy = e.y2 - e.y1, len = Math.hypot(dx, dy) || 1
+            for (const rb of L.robots) {
+              const px = rb.x - e.x1, py = rb.y - e.y1, along = (px * dx + py * dy) / len
+              if (along >= 0 && along <= len && Math.abs(px * dy - py * dx) / len * 2 <= e.r && Math.random() < 0.4)
+                this.parts.emit(ox + rb.x / MC, this.bodyY(g, e.p, rb.x, rb.y), rb.y / MC, 2, Math.random() < 0.5 ? c : 0xffffff, 2.5, 0.2, 0.12, 0.8, 5)
+            }
+            break
+          }
+          case 'emp': {
+            this.rings.add(a.x, a.z, 0.2, r, c, 0.5)
+            this.blasts.add(a.x, a.z, 0.3, r, c, 0.45, 0, 0.25)
+            if (v) v.pulseAt = this.time
+            break
+          }
+        }
         if (hear(e.p)) sfx.shot(e.tower)
       } else if (e.t === 'kill') {
         const r = this.rv.get(e.robot)
@@ -408,13 +516,23 @@ export class Scene3D {
 
   private lightning(a: THREE.Vector3, b: THREE.Vector3, c: number) {
     let prev = a.clone()
-    for (let k = 1; k <= 4; k++) {
-      const t = k / 4, pnt = new THREE.Vector3().lerpVectors(a, b, t)
-      if (k < 4) pnt.add(new THREE.Vector3((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.4))
-      this.bolts.add(prev, pnt, 0.035, c, 0.09)
+    const n = 6
+    for (let k = 1; k <= n; k++) {
+      const pnt = new THREE.Vector3().lerpVectors(a, b, k / n)
+      if (k < n) pnt.add(new THREE.Vector3((Math.random() - 0.5) * 0.45, (Math.random() - 0.5) * 0.35, (Math.random() - 0.5) * 0.45))
+      this.bolts.add(prev, pnt, 0.08, c, 0.12, 0.35) // glow
+      this.bolts.add(prev, pnt, 0.025, 0xffffff, 0.1) // hot core
       prev = pnt
     }
-    this.parts.emit(b.x, b.y, b.z, 3, c, 2, 0.15, 0.15, 0, 0)
+    this.blasts.add(b.x, b.z, 0.05, 0.28, c, 0.15, b.y)
+    this.parts.emit(b.x, b.y, b.z, 4, c, 2.5, 0.2, 0.14, 0, 3)
+  }
+
+  private hearable(ui: UiState, p: number) { return ui.layout === 'both' || p === ui.focus }
+  /** Height to aim at for whatever stands at (x, y) in mc: flyers float, walkers are hit in the chest. */
+  private bodyY(g: Game, p: number, x: number, y: number) {
+    const r = g.lanes[p].robots.find(r => r.x === x && r.y === y)
+    return r && ROBOTS[r.kind].air ? 1.1 : r?.kind === 'colossus' ? 1.0 : 0.45
   }
 
   // --- per-frame draw ----------------------------------------------------------------
@@ -431,7 +549,15 @@ export class Scene3D {
     this.place(this.cam.x, this.cam.z, this.cam.dist, sx, sy)
 
     this.towers.begin(); this.robots.begin()
-    let nShadow = 0, nBar = 0, nChev = 0
+    let nShadow = 0, nBar = 0, nChev = 0, nField = 0, nMark = 0
+    const disc = (x: number, z: number, r: number, color: number, k: number, y = 0.025) => {
+      if (nField >= this.fields.instanceMatrix.count) return
+      this.fields.setMatrixAt(nField, _m.makeScale(r, 1, r).setPosition(x, y, z)); this.fields.setColorAt(nField++, _c.set(color).multiplyScalar(k))
+    }
+    const mark = (x: number, z: number, r: number, color: number, k: number, y = 0.035) => {
+      if (nMark >= this.marks.instanceMatrix.count) return
+      this.marks.setMatrixAt(nMark, _m.makeScale(r, 1, r).setPosition(x, y, z)); this.marks.setColorAt(nMark++, _c.set(color).multiplyScalar(k))
+    }
     const seenR = new Set<number>(), seenT = new Set<number>()
 
     const camQ = this.camera.quaternion
@@ -455,7 +581,7 @@ export class Scene3D {
         if (!tw) continue
         seenT.add(tw.id)
         let v = this.tv.get(tw.id)
-        if (!v) { v = { yaw: Math.PI, want: Math.PI, recoil: 0, spin: 0, spinV: 0, born: t, hp: tw.hp, flash: 0, x: ox + tw.x + 0.5, z: tw.y + 0.5, color: DMG[TOWERS[tw.kind].dmg], lost: false }; this.tv.set(tw.id, v); if (ui.me >= 0 && (p === ui.focus || ui.layout === 'both')) { sfx.build(); this.parts.emit(ox + tw.x + 0.5, 0.1, tw.y + 0.5, 8, 0x9ba3ae, 1.5, 0.4, 0.3, 1) } }
+        if (!v) { v = { yaw: Math.PI, want: Math.PI, recoil: 0, spin: 0, spinV: 0, born: t, hp: tw.hp, flash: 0, x: ox + tw.x + 0.5, z: tw.y + 0.5, color: DMG[TOWERS[tw.kind].dmg], lost: false, pulseAt: -9 }; this.tv.set(tw.id, v); if (ui.me >= 0 && (p === ui.focus || ui.layout === 'both')) { sfx.build(); this.parts.emit(ox + tw.x + 0.5, 0.1, tw.y + 0.5, 8, 0x9ba3ae, 1.5, 0.4, 0.3, 1) } }
         if (tw.hp < v.hp) v.flash = 1
         v.hp = tw.hp
         v.flash = Math.max(0, v.flash - dt * 6)
@@ -477,6 +603,13 @@ export class Scene3D {
         }, pc => pc === 'dmg' ? dmg : pc === 'side' ? COL.hazard : pc, v.flash)
         // level pips and branch badge as small glowing marks above the base
         if (tw.hp < tw.maxHp) bar(ox + tw.x + 0.5, 1.0, tw.y + 0.5, 0.7, tw.hp / tw.maxHp, COL.rogue)
+        // EMP slow field: stays lit while it keeps pulsing at robots
+        const since = t - v.pulseAt
+        if (kind === 'emp' && since < 0.8) {
+          const rr = towerStats(tw).rangeMc / MC, f = 1 - since / 0.8
+          disc(v.x, v.z, rr, COL.energy, 0.07 * f + 0.03 * Math.sin(t * 10) * f)
+          mark(v.x, v.z, rr, COL.energy, 0.35 * f)
+        }
       }
 
       // robots
@@ -499,14 +632,15 @@ export class Scene3D {
         const root = new THREE.Matrix4().makeTranslation(x, fly + bob, z).multiply(new THREE.Matrix4().makeRotationY(v.yaw)).multiply(_m.makeScale(s, s, s))
         const side = r.owner < 0 ? COL.dust : r.owner === ui.me ? COL.hazard : COL.rogue
         const swing = Math.sin(v.phase) * (r.stun > 0 ? 0 : 0.7)
-        const hip = r.kind === 'colossus' ? COLOSSUS_HIP : PIVOT_AT.legL[1]
+        const hip = RIG[r.kind]?.hip ?? PIVOT_AT.legL[1], shoulder = RIG[r.kind]?.shoulder ?? PIVOT_AT.armL[1]
         this.robots.add(r.kind, root, pv => {
           switch (pv) {
             case 'legL': return new THREE.Matrix4().makeTranslation(0, hip, 0).multiply(new THREE.Matrix4().makeRotationX(swing))
             case 'legR': return new THREE.Matrix4().makeTranslation(0, hip, 0).multiply(new THREE.Matrix4().makeRotationX(-swing))
-            case 'armL': return new THREE.Matrix4().makeTranslation(...PIVOT_AT.armL).multiply(new THREE.Matrix4().makeRotationX(-swing * 0.6))
-            case 'armR': return new THREE.Matrix4().makeTranslation(...PIVOT_AT.armR).multiply(new THREE.Matrix4().makeRotationX(swing * 0.6))
-            case 'rotor': return new THREE.Matrix4().makeRotationY(t * 40)
+            case 'armL': return new THREE.Matrix4().makeTranslation(0, shoulder, 0).multiply(new THREE.Matrix4().makeRotationX(-swing * 0.6))
+            case 'armR': return new THREE.Matrix4().makeTranslation(0, shoulder, 0).multiply(new THREE.Matrix4().makeRotationX(swing * 0.6))
+            case 'rotor': return new THREE.Matrix4().makeRotationY(t * 40 + r.id)
+            case 'drill': return new THREE.Matrix4().makeRotationZ(t * (r.stun > 0 ? 0 : 14))
             case 'spin': return new THREE.Matrix4().makeRotationY(t * 2)
             case 'pulse': { const q = 1 + Math.sin(t * 5 + r.id) * 0.15; return new THREE.Matrix4().makeScale(q, q, q) }
             default: return _m2.identity()
@@ -517,12 +651,19 @@ export class Scene3D {
           this.shadows.setMatrixAt(nShadow++, _m.makeScale(rad, 1, rad).setPosition(x, 0.015, z))
         }
         if (r.shield > 0) this.parts.emit(x, 0.5 + fly, z, 1, COL.energy, 0.3, 0.2, 0.25, 0, 0)
-        if (r.slow > 0 && Math.random() < 0.2) this.parts.emit(x, 0.3 + fly, z, 1, COL.energy, 0.5, 0.3, 0.12, 0.5, 0)
+        if (r.slow > 0) { mark(x, z, 0.32 * s * (r.kind === 'colossus' ? 2 : 1), COL.energy, 0.7 + Math.sin(t * 9 + r.id) * 0.2); if (Math.random() < 0.15) this.parts.emit(x, 0.3 + fly, z, 1, COL.energy, 0.5, 0.3, 0.12, 0.5, 0) }
+        if (r.stun > 0 && Math.random() < 0.4) this.parts.emit(x + (Math.random() - 0.5) * 0.3, 0.6 + fly, z, 1, COL.hazard, 1.5, 0.15, 0.1, 0.5, 0)
+        if (r.kind === 'repair') mark(x, z, AURA.repairMc / MC, MEDIC_AURA, 0.07 + Math.sin(t * 3 + r.id) * 0.03)
+        else if (r.kind === 'shield') mark(x, z, AURA.shieldMc / MC, COL.energy, 0.07 + Math.sin(t * 3 + r.id) * 0.03)
         if (r.hp < r.maxHp) bar(x, (r.kind === 'colossus' ? 1.8 : 0.85) + fly, z, r.kind === 'colossus' ? 1.2 : 0.6, r.hp / r.maxHp, side === COL.dust ? COL.white : side)
       }
 
       // burning ground
-      for (const b of L.burns) if (Math.random() < 0.5) this.parts.emit(ox + b.x + Math.random(), 0.05, b.y + Math.random(), 1, COL.explosive, 0.5, 0.5, 0.3, 1.2, 0)
+      const lit = new Set<number>() // burns stack on a cell; glow once (additive blends add up fast)
+      for (const b of L.burns) {
+        if (!lit.has(b.y * COLS + b.x)) { lit.add(b.y * COLS + b.x); disc(ox + b.x + 0.5, b.y + 0.5, 0.5, COL.explosive, 0.08 + Math.sin(t * 13 + b.x * 3 + b.y) * 0.03) }
+        if (Math.random() < dt * 10) this.parts.emit(ox + b.x + Math.random(), 0.05, b.y + Math.random(), 1, COL.explosive, 0.5, 0.5, 0.22, 1.2, 0)
+      }
 
       // route chevrons (with build preview for the own lane)
       let towers = L.towers
@@ -600,7 +741,11 @@ export class Scene3D {
     this.shadows.count = nShadow; this.shadows.instanceMatrix.needsUpdate = true
     this.bars.count = nBar; this.bars.instanceMatrix.needsUpdate = true; if (this.bars.instanceColor) this.bars.instanceColor.needsUpdate = true
     this.chevrons.count = nChev; this.chevrons.instanceMatrix.needsUpdate = true; if (this.chevrons.instanceColor) this.chevrons.instanceColor.needsUpdate = true
-    this.parts.update(dt); this.bolts.update(dt); this.rings.update(dt)
+    for (const [m, n] of [[this.fields, nField], [this.marks, nMark]] as const) {
+      m.count = n; m.visible = n > 0; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true
+    }
+    this.shots.update(dt, this.parts)
+    this.parts.update(dt); this.bolts.update(dt); this.rings.update(dt); this.blasts.update(dt); this.embers.update(dt)
     ;(this.parts.points.material as THREE.ShaderMaterial).uniforms.scale.value = H * this.renderer.getPixelRatio() * 0.5
 
     // main view
