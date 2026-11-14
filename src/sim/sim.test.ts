@@ -100,7 +100,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   assert.equal(t.maxHp, 390 * MC)
   const st = towerStats(t)
   assert.equal(st.rangeMc, 3630)
-  assert.equal(st.dps, Math.floor(15 * 256 / 100 * 180 / 100 * MC))
+  assert.equal(st.dps, Math.floor(22.5 * 256 / 100 * 180 / 100 * MC))
   const gold = L.gold
   step(g, at(0, [{ t: 'sell', x: 3, y: 5 }]))
   assert.equal(L.gold - gold, 75)
@@ -114,10 +114,10 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
     step(g, at(0, [{ t: 'build', x: 5, y: ty, kind }]))
     const t = L.towers[ty * COLS + 5]!
     if (branch) { t.level = 3; t.branch = branch }
-    const rs = robots.map(([k, x, y]) => put(g, L, k, x, y))
+    const rs = robots.map(([k, x, y]) => put(g, L, k, x, y, 10_000 * MC)) // tough enough that nobody dies and the aim never moves
     for (const r of rs) r.stun = 1000 // hold still
     for (let i = 0; i < 20; i++) quiet(g)
-    return rs.map(r => r.hp < 100 * MC)
+    return rs.map(r => r.hp < 10_000 * MC)
   }
   const column: [RobotKind, number, number][] = [['scout', 5, 8], ['scout', 5, 7], ['scout', 5, 6], ['scout', 5, 5]]
   assert.deepEqual(near('gatling', null, [['scout', 5, 8], ['scout', 0, 3]]), [true, false], 'single target in range only')
