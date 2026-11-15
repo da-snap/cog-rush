@@ -366,6 +366,10 @@ function spawnGroup(g: Game, L: Lane, group: Spawn[]) {
 function apply(g: Game, c: Cmd) {
   const L = g.lanes[c.p]
   if (!L || L.lives <= 0) return
+  // online, commands come from the rival's device: anything malformed is dropped, never thrown on
+  if ('x' in c && !(Number.isInteger(c.x) && Number.isInteger(c.y) && inLane(c.x, c.y))) return
+  if ('kind' in c && !Object.hasOwn(c.t === 'build' ? TOWERS : ROBOTS, c.kind)) return
+  if ('branch' in c && c.branch !== undefined && typeof c.branch !== 'string') return
   switch (c.t) {
     case 'build': {
       if (canBuild(L, c.x, c.y, c.kind)) return

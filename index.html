@@ -90,6 +90,8 @@
     .grid.six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .row { display: flex; gap: 6px; }
     .row > * { flex: 1; }
+    .card input { min-height: 44px; width: 100%; box-sizing: border-box; padding: 0 10px; margin: 0 0 8px; background: var(--hull); color: var(--white); border: 0; box-shadow: inset 0 0 0 2px var(--seam2); font: 700 15px var(--ui); clip-path: var(--cut-s); }
+    .card .row input { margin: 0; text-transform: uppercase; letter-spacing: .2em; }
 
     /* buttons: amber primary, plate secondary, rogue outline for destructive; chamfer S */
     button { min-height: 44px; min-width: 44px; padding: 4px 10px; border: 0; background: var(--hazard); color: var(--hazard-ink); font: 700 14px var(--ui); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; touch-action: manipulation; clip-path: var(--cut-s); }
@@ -197,6 +199,7 @@
       <button data-diff="normal">Normal bot</button>
       <button data-diff="hard" class="alt">Hard bot</button>
       <button id="ladderBtn">Bot ladder · daily challenge</button>
+      <button id="onlineBtn">Online match · 2 players</button>
       <button id="lanBtn" class="alt">LAN match · 2 players</button>
       <button id="menuMute" class="ghost" aria-label="Sound on or off" style="width:44px;margin:12px auto 0"></button>
     </div>
@@ -238,9 +241,20 @@
     </div>
   </div>
 
+  <div id="online" class="screen" hidden>
+    <div class="card">
+      <h2 style="margin:0 0 12px">ONLINE MATCH</h2>
+      <input id="nick" maxlength="16" placeholder="Your nickname" autocomplete="nickname" />
+      <button id="quickBtn">Quick match</button>
+      <button id="createBtn" class="alt">New game with a code</button>
+      <div class="row"><input id="codeIn" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" /><button id="joinBtn">Join</button></div>
+      <button id="onlineBack" class="ghost">Back</button>
+    </div>
+  </div>
+
   <div id="lobby" class="screen" hidden>
     <div class="card">
-      <h2 style="margin:0 0 12px">LAN MATCH</h2>
+      <h2 id="lobbyTitle" style="margin:0 0 12px">LAN MATCH</h2>
       <p id="lobbyText"></p>
       <button id="lobbyCancel" class="alt">Back to menu</button>
     </div>

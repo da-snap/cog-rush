@@ -1,0 +1,21 @@
+# Game + online relay. Settings come from .env (not committed), see .env.example.
+# Put it behind a reverse proxy that terminates TLS and passes WebSocket upgrades on /ws.
+#   docker compose up -d --build
+services:
+  cogrush:
+    build:
+      context: .
+      args:
+        RELAY_URL: ${RELAY_URL}
+    container_name: cogrush
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 64
+    environment:
+      - ORIGINS=${ORIGINS:-}
+      - TRUST_PROXY=${TRUST_PROXY:-}
+    ports:
+      - 127.0.0.1:${HOST_PORT:-8787}:8787

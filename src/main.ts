@@ -46,9 +46,13 @@ addEventListener('resize', size); size()
 let ME = 0, OPP = 1 // lane indices; on LAN the server assigns the seat
 let g: Game | null = null
 let bot: { st: Strategy; mem: BotMem } | null = null
-// LAN match: the server sends one { n, cmds } packet per sim tick; we step exactly on those
-let net: { ws: WebSocket; queue: { n: number; cmds: Cmd[] }[]; lastAt: number } | null = null
-const rival = () => (net ? 'Rival' : 'Bot')
+// LAN / online match: the server sends one { n, cmds } packet per sim tick; we step exactly on those,
+// NET_BUF ticks behind the newest packet so network jitter doesn't stutter the game
+interface Net { ws: WebSocket; queue: { n: number; cmds: Cmd[] }[]; started: boolean; acc: number; online: boolean; opp: string; code: string; token: string; lostAt: number }
+let net: Net | null = null
+const NET_BUF = 3 // 150 ms
+const RELAY = import.meta.env.VITE_RELAY_URL as string | undefined // e.g. wss://relay.example.com/ws
+const rival = () => (net ? net.opp || 'Rival' : 'Bot')
 let diff: keyof typeof DIFFICULTY = 'normal'
 let pending: Cmd[] = []
 let paused = false
@@ -127,9 +131,10 @@ function begin() {
 
 function end(game: Game) {
   const won = game.winner === ME, draw = game.winner === -2
+  if (net && !replay) { if (net.ws.readyState === WebSocket.OPEN) net.ws.send(JSON.stringify({ t: 'over' })); clearSession() }
   $('endTitle').textContent = draw ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT'
   $('endTitle').style.color = hex(draw ? C.white : won ? C.hazard : C.rogue)
-  const who = net ? 'LAN match' : mode.kind === 'ladder' ? `Ladder: ${RIVALS[mode.i].name}` : mode.kind === 'daily' ? `Daily: ${MODS[mode.mod].name} vs ${RIVALS[mode.i].name}` : DIFFICULTY[diff].name + ' bot'
+  const who = net ? (net.online ? `Online vs ${rival()}` : 'LAN match') : mode.kind === 'ladder' ? `Ladder: ${RIVALS[mode.i].name}` : mode.kind === 'daily' ? `Daily: ${MODS[mode.mod].name} vs ${RIVALS[mode.i].name}` : DIFFICULTY[diff].name + ' bot'
   $('endSub').textContent = `${replay ? 'Replay · ' : ''}${who} · ${clock(secs(game))}`
   $('endReport').innerHTML = replay ? '' : report(game, won) + livesChart()
   if (!replay && won && mode.kind === 'ladder' && mode.i > ladderBeaten()) {
@@ -163,7 +168,7 @@ $('again').onclick = () => {
   lobby('Waiting for your rival to accept the rematch…')
 }
 
-// --- LAN match -------------------------------------------------------------------
+// --- LAN / online match -------------------------------------------------------------
 
 function lobby(text: string, showCancel = true) {
   $('lobbyText').textContent = text
@@ -177,32 +182,79 @@ function closeNet() {
   ws.onclose = null
   ws.close()
 }
+const hashLanes = (game: Game) => { const s = JSON.stringify(game.lanes); let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h }
+// a reload or a killed PWA can rejoin the running match for 30 s
+const saveSession = (n: Net) => store.set('net', JSON.stringify({ code: n.code, token: n.token, online: n.online, at: Date.now() }))
+const clearSession = () => store.set('net', '')
+const nick = () => (($<HTMLInputElement>('nick').value.trim() || store.get('nick')) ?? '').slice(0, 16) || 'Player'
 function toMenu() {
-  closeNet(); tourEnd()
+  closeNet(); clearSession(); tourEnd()
   replay = null
-  $('end').hidden = true; $('lobby').hidden = true; $('ladder').hidden = true; $('menu').hidden = false
+  $('end').hidden = true; $('lobby').hidden = true; $('ladder').hidden = true; $('online').hidden = true; $('menu').hidden = false
   document.body.classList.add('menu'); g = null; startDemo(); sfx.stopMusic()
 }
-$('lanBtn').onclick = () => {
+function connect(room: string, online: boolean, token = '', lostAt = 0) {
   sfx.unlockAudio()
   closeNet()
+  const base = online ? RELAY! : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+  const q = new URLSearchParams({ room, v: __BUILD__, name: nick(), ...(token ? { token } : {}) })
   let ws: WebSocket
-  try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`) } catch { return lobby('Could not connect.') }
-  net = { ws, queue: [], lastAt: performance.now() }
-  lobby('Connecting to the LAN server…')
-  ws.onmessage = ev => {
-    const m = JSON.parse(ev.data)
-    if (!net || net.ws !== ws) return
-    if (m.t === 'seat') { ME = m.seat; OPP = 1 - m.seat }
-    else if (m.t === 'waiting') lobby(m.players < 2 ? `You are player ${ME + 1}. Waiting for a second player to open ${location.host}…` : 'Waiting for your rival…')
-    else if (m.t === 'full') { closeNet(); lobby('This LAN match already has two players.') }
-    else if (m.t === 'start') { $('lobby').hidden = true; net.queue = []; begin(); toast(`LAN match: you are player ${ME + 1}`, 3000) }
-    else if (m.t === 'tick') { net.queue.push({ n: m.n, cmds: m.cmds }); net.lastAt = performance.now() }
-    else if (m.t === 'left') { sfx.stopMusic(); g = null; lobby('Your rival left the match. Waiting for them to come back…') }
+  try { ws = new WebSocket(`${base}?${q}`) } catch { return lobby('Could not connect.') }
+  $('lobbyTitle').textContent = online ? 'ONLINE MATCH' : 'LAN MATCH'
+  const n: Net = net = { ws, queue: [], started: false, acc: 0, online, opp: '', code: room, token, lostAt }
+  if (!lostAt) lobby(online ? 'Connecting to the game server…' : 'Connecting to the LAN server…')
+  const startNet = (opp: string, ticks: Net['queue']) => {
+    n.opp = opp; n.lostAt = 0
+    $('lobby').hidden = true
+    begin()
+    n.queue = ticks; n.started = false; n.acc = 0
+    saveSession(n)
   }
-  ws.onclose = () => { if (net?.ws === ws) { net = null; g = null; lobby('No LAN server here. Start one with "npm run lan" on one computer and open the address it prints on both devices.') } }
+  ws.onmessage = ev => {
+    if (net !== n) return
+    const m = JSON.parse(ev.data)
+    if (m.t === 'seat') { ME = m.seat; OPP = 1 - m.seat; n.code = m.code; n.token = m.token }
+    else if (m.t === 'waiting') lobby(!online ? (m.players < 2 ? `You are player ${ME + 1}. Waiting for a second player to open ${location.host}…` : 'Waiting for your rival…')
+      : m.players < 2 ? (room === 'quick' ? 'Looking for a rival… (or share the code ' + m.code + ')' : `Game code: ${m.code}. Your friend opens the game, picks Online match and enters it, or opens ${location.origin}${location.pathname}?join=${m.code}`)
+      : 'Waiting for your rival…')
+    else if (m.t === 'full') { closeNet(); lobby('This match already has two players.') }
+    else if (m.t === 'error') { closeNet(); clearSession(); lobby(m.text) }
+    else if (m.t === 'old') { closeNet(); lobby('You and your rival run different versions of the game. Close and reopen it on both devices to update, then try again.') }
+    else if (m.t === 'start') { startNet(m.opp, []); toast(online ? `Online match vs ${rival()}` : `LAN match: you are player ${ME + 1}`, 3000) }
+    else if (m.t === 'resume') { startNet(m.opp, m.ticks); toast('Reconnected, catching up', 2000) }
+    else if (m.t === 'tick') n.queue.push({ n: m.n, cmds: m.cmds })
+    else if (m.t === 'left') { sfx.stopMusic(); g = null; lobby('Your rival left. Waiting for them to come back…') }
+    else if (m.t === 'gone') toast(`${rival()} lost connection. They have 30 s to come back`, 4000)
+    else if (m.t === 'back') toast(`${rival()} is back`, 2000)
+    else if (m.t === 'forfeit') { clearSession(); if (g && g.winner === -1) { g.winner = ME; end(g); $('endSub').textContent += ' · rival left' } }
+    else if (m.t === 'desync') toast('Out of sync with your rival: this match may look different on their screen', 6000)
+  }
+  ws.onclose = () => {
+    if (net !== n) return
+    const since = n.lostAt || Date.now()
+    if (g && g.winner === -1 && n.token && Date.now() - since < 32_000) { // mid-match drop: keep trying for 30 s
+      toast('Connection lost. Reconnecting…', 2500)
+      setTimeout(() => { if (net === n) connect(n.code, online, n.token, since) }, 2000)
+      return
+    }
+    net = null; g = null; clearSession()
+    lobby(online ? 'Lost the connection to the game server.' : 'No LAN server here. Start one with "npm run lan" on one computer and open the address it prints on both devices.')
+  }
 }
-if (import.meta.env.VITE_NO_LAN) $('lanBtn').remove() // static hosting (GitHub Pages) has no relay server
+$('lanBtn').onclick = () => connect('LAN', false)
+if (import.meta.env.VITE_NO_LAN) $('lanBtn').remove() // static hosting (GitHub Pages) has no LAN server
+if (!RELAY) $('onlineBtn').remove()
+$<HTMLInputElement>('nick').value = store.get('nick') ?? ''
+$('nick').onchange = () => store.set('nick', nick())
+$('onlineBtn').onclick = () => { $('menu').hidden = true; $('online').hidden = false }
+$('onlineBack').onclick = () => { $('online').hidden = true; $('menu').hidden = false }
+$('quickBtn').onclick = () => { $('online').hidden = true; connect('quick', true) }
+$('createBtn').onclick = () => { $('online').hidden = true; connect('new', true) }
+$('joinBtn').onclick = () => {
+  const code = $<HTMLInputElement>('codeIn').value.trim().toUpperCase()
+  if (!/^[A-Z]{4}$/.test(code)) return toast('A game code has 4 letters', 2000)
+  $('online').hidden = true; connect(code, true)
+}
 $('lobbyCancel').onclick = toMenu
 $('watch').onclick = () => { $('end').hidden = true; startReplay() }
 $('next').onclick = () => { if (mode.kind === 'ladder') play(RIVALS[mode.i + 1].st, { kind: 'ladder', i: mode.i + 1 }) }
@@ -650,17 +702,27 @@ function frame(now: number) {
     const wasSealed = game.lanes[ME].sealed
     recStep(game, cmds)
     stepped = true
-    if (import.meta.env.DEV && game.tick % 100 === 0) ((window as unknown as { __h: Record<number, number> }).__h ??= {})[game.tick] = [...JSON.stringify(game.lanes)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 0)
+    // every 5 s both clients send a state hash; the server shouts if they differ
+    if (net && game.tick % 100 === 0 && net.queue.length < 20 && net.ws.readyState === WebSocket.OPEN) {
+      net.ws.send(JSON.stringify({ t: 'hash', n: game.tick, h: hashLanes(game) }))
+      saveSession(net)
+    }
     world.onStep(game, ui)
     after(game, wasSealed)
   }
   let alpha = 1
   if (net) {
-    // LAN: send our commands, step on every tick packet (catch up if a few arrived at once)
+    // send our commands; step one tick per 50 ms once NET_BUF packets are buffered, faster to catch up
     if (pending.length && net.ws.readyState === WebSocket.OPEN) net.ws.send(JSON.stringify({ t: 'cmds', cmds: pending }))
     pending = []
-    for (let k = 0; k < 20 && net.queue.length && g.winner === -1; k++) one(net.queue.shift()!.cmds)
-    alpha = Math.min(1, (now - net.lastAt) / DT)
+    const q = net.queue
+    if (!net.started && q.length >= NET_BUF) net.started = true
+    if (net.started) {
+      net.acc += dtMs
+      for (let k = 0; k < 600 && q.length && g.winner === -1 && (net.acc >= DT || q.length > NET_BUF * 2); k++) { net.acc = Math.max(0, net.acc - DT); one(q.shift()!.cmds) }
+      if (!q.length) net.acc = Math.min(net.acc, DT)
+      alpha = Math.min(1, net.acc / DT)
+    }
   } else {
     if (running) acc = Math.min(acc + dtMs * (replay ? 4 : 1), DT * 40) // don't spiral after a background tab
     while (running && acc >= DT && g.winner === -1) {
@@ -708,9 +770,12 @@ function adapt(dtMs: number) {
 }
 requestAnimationFrame(frame)
 
-// ?play=easy|normal|hard skips the menu
-const q = new URLSearchParams(location.search).get('play')
-if (q && q in DIFFICULTY) start(q as keyof typeof DIFFICULTY)
+// ?play=easy|normal|hard skips the menu; ?join=CODE joins an online game
+const params = new URLSearchParams(location.search), q = params.get('play'), joinCode = params.get('join')
+const saved = (() => { try { return JSON.parse(store.get('net') || 'null') as { code: string; token: string; online: boolean; at: number } | null } catch { return null } })()
+if (saved && Date.now() - saved.at < 30_000 && (!saved.online || RELAY)) connect(saved.code, saved.online, saved.token)
+else if (joinCode && RELAY) { history.replaceState(null, '', location.pathname); connect(joinCode.toUpperCase(), true) }
+else if (q && q in DIFFICULTY) start(q as keyof typeof DIFFICULTY)
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) navigator.serviceWorker.register(import.meta.env.BASE_URL + 'sw.js')
 // dev console hook: game() returns live state

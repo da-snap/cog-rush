@@ -1,5 +1,6 @@
 // Run: npm test (node strips the types). Plain asserts, no framework.
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { AURA, COLS, LIVES, MC, ROBOTS, SEND, START_INCOME, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
 import { INF, damage, newGame, spawn, step, towerStats, wouldSeal, type Cmd, type Game, type Lane } from './sim.ts'
 
@@ -325,6 +326,27 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   const one = chew(1), twelve = chew(12)
   assert.ok(one > 0, 'a Tank chews a sealed wall')
   assert.ok(twelve < one * 2, `the queue behind doesn't chew (1 Tank ${one}, 12 Tanks ${twelve})`)
+}
+
+// malformed commands from a hostile client are ignored, not thrown on, and change nothing
+{
+  const { g } = game()
+  const before = JSON.stringify(g.lanes)
+  const junk = [{ t: 'build', x: 1.5, y: 6, kind: 'gatling' }, { t: 'build', x: 3, y: 6, kind: 'constructor' }, { t: 'build', x: 99, y: 6, kind: 'gatling' },
+    { t: 'factory', kind: '__proto__' }, { t: 'load', kind: 'toString' }, { t: 'demolish', kind: 'nope' }, { t: 'upgrade', x: 2, y: 6, branch: {} }, { t: 'sell', x: -1, y: 'a' }, { t: 'boom' }]
+  step(g, junk.map(c => ({ ...c, p: 0 }) as unknown as Cmd))
+  g.tick--; const after = JSON.stringify(g.lanes)
+  assert.equal(after.replace(/"gold":\d+/g, ''), before.replace(/"gold":\d+/g, ''), 'junk commands change nothing')
+}
+
+// online play is lockstep: both phones must compute bit-identical results. + - * / and Math.sqrt are exact
+// in every JS engine; sin/cos/atan2/pow/exp/log/hypot/cbrt are not, and Math.random/Date differ per device.
+{
+  for (const f of ['sim.ts', 'config.ts', 'bot.ts']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8').replace(/\/\/.*$/gm, '')
+    const bad = src.match(/Math\.(sin|cos|tan|asin|acos|atan2?|pow|exp|expm1|log\w*|hypot|cbrt|random)\b|Date\.now|new Date|performance\.now|\*\*\s*(0?\.\d|\d*\.\d+)/g)
+    assert.equal(bad, null, `${f} uses math that can differ between browsers: ${bad}`)
+  }
 }
 
 console.log('sim ok')

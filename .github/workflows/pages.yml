@@ -24,7 +24,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npx tsc --noEmit && VITE_NO_LAN=1 npx vite build --base=/cog-rush/
+      # RELAY_URL: repo Settings > Secrets and variables > Actions > Variables, e.g. wss://relay.example.com/ws
+      - run: npx tsc --noEmit && VITE_NO_LAN=1 VITE_RELAY_URL=${{ vars.RELAY_URL }} npx vite build --base=/cog-rush/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

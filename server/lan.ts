@@ -1,5 +1,6 @@
-// LAN server: serves the built game (dist/) and runs a tiny lockstep relay over WebSocket.
-// Run: npm run lan  → open the printed address on both devices.
+// LAN + online server: serves the built game (dist/) and runs a tiny lockstep relay over WebSocket.
+// LAN: npm run lan  → open the printed address on both devices.
+// Online relay: PORT=8787 ORIGINS=https://<user>.github.io node server/lan.ts, behind a TLS reverse proxy (see server/HOSTING.md).
 // No dependencies: the WebSocket protocol (RFC 6455) is implemented below, text frames only.
 //
 // Netcode: the server is the metronome. Every 50 ms (the sim's 20 Hz) it broadcasts
@@ -9,7 +10,7 @@ import { createServer, type IncomingMessage } from 'node:http'
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
-import { extname, join, normalize } from 'node:path'
+import { extname, join, normalize, sep } from 'node:path'
 import type { Socket } from 'node:net'
 
 const PORT = Number(process.env.PORT ?? 8787)
@@ -24,8 +25,9 @@ const MIME: Record<string, string> = {
 
 const http = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x')
+  if (url.pathname === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }).end(`ok ${rooms.size} rooms`); return }
   const path = normalize(join(DIST, decodeURIComponent(url.pathname)))
-  if (!path.startsWith(DIST)) { res.writeHead(403).end(); return }
+  if (path !== DIST && !path.startsWith(DIST + sep)) { res.writeHead(403).end(); return } // not ../dist-other either
   try {
     const file = (await stat(path)).isDirectory() ? join(path, 'index.html') : path
     res.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' })
@@ -42,10 +44,18 @@ class Ws {
   onText: (s: string) => void = () => {}
   onClose: () => void = () => {}
   closed = false
+  private since = 0
+  private chunks = 0
   private sock: Socket
   constructor(sock: Socket) {
     this.sock = sock
-    sock.on('data', d => { this.buf = Buffer.concat([this.buf, d]); this.parse() })
+    sock.on('data', d => {
+      // flood guard: more than 60 chunks a second (the game sends ~20) closes the connection
+      const now = Date.now()
+      if (now - this.since > 1000) { this.since = now; this.chunks = 0 }
+      if (++this.chunks > 60 || this.buf.length > 32_768) return this.close()
+      this.buf = Buffer.concat([this.buf, d]); this.parse()
+    })
     sock.on('close', () => this.close())
     sock.on('error', () => this.close())
   }
@@ -56,7 +66,7 @@ class Ws {
       let len = this.buf[1] & 0x7f, off = 2
       if (len === 126) { if (this.buf.length < 4) return; len = this.buf.readUInt16BE(2); off = 4 }
       else if (len === 127) { if (this.buf.length < 10) return; len = Number(this.buf.readBigUInt64BE(2)); off = 10 }
-      if (len > 1 << 20) return this.close() // nobody needs a 1 MB command
+      if (len > 16_384) return this.close() // real messages are < 2 KB
       const need = off + (masked ? 4 : 0) + len
       if (this.buf.length < need) return
       const mask = masked ? this.buf.subarray(off, off + 4) : null
@@ -86,59 +96,144 @@ class Ws {
 
 http.on('upgrade', (req: IncomingMessage, sock: Socket) => {
   const key = req.headers['sec-websocket-key']
-  if (new URL(req.url ?? '/', 'http://x').pathname !== '/ws' || typeof key !== 'string') { sock.destroy(); return }
+  const url = new URL(req.url ?? '/', 'http://x')
+  if (url.pathname !== '/ws' || typeof key !== 'string') { sock.destroy(); return }
+  if (ORIGINS.length && !ORIGINS.includes(req.headers.origin ?? '')) { sock.destroy(); return }
+  // behind a reverse proxy every socket comes from the proxy; TRUST_PROXY=1 reads the real client IP
+  const ip = (process.env.TRUST_PROXY && String(req.headers['x-real-ip'] ?? '')) || sock.remoteAddress || '?'
+  if ((perIp.get(ip) ?? 0) >= MAX_PER_IP) { sock.destroy(); return }
+  perIp.set(ip, (perIp.get(ip) ?? 0) + 1)
+  sock.on('close', () => { const n = (perIp.get(ip) ?? 1) - 1; if (n) perIp.set(ip, n); else perIp.delete(ip) })
+  sock.setKeepAlive(true, 30_000) // a phone that vanished without closing frees its seat
   const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64')
   sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`)
   sock.setNoDelay(true)
-  join2(new Ws(sock))
+  joinRoom(new Ws(sock), url.searchParams)
 })
 
-// --- one room, two seats -------------------------------------------------------------
+// --- rooms ---------------------------------------------------------------------------
+// LAN: everyone lands in room "LAN". Online: ?room=new creates a 4-letter code, ?room=ABCD joins it,
+// ?room=quick pairs the first two waiting players. ?v= is the client build; only equal builds play together.
+// A seat keeps its token, so a dropped player can rejoin with ?token= and catch up from the tick log.
 
-const seats: (Ws | null)[] = [null, null]
-const ready = [false, false]
-let tick = 0, timer: NodeJS.Timeout | null = null, inbox: unknown[] = []
+const FORFEIT_MS = 30_000
+const MAX_ROOMS = 500 // ponytail: global cap; per-IP limits if someone actually floods it
+const ORIGINS = (process.env.ORIGINS ?? '').split(',').filter(Boolean) // empty = allow all (LAN)
+const MAX_PER_IP = 6 // open sockets per client IP
+const perIp = new Map<string, number>()
+// only plain command fields are forwarded to the rival, never whatever else a modified client packs in
+const clean = (c: Record<string, unknown>, p: number) => {
+  const o: Record<string, unknown> = { p }
+  for (const k of ['t', 'kind', 'branch']) if (typeof c[k] === 'string' && (c[k] as string).length <= 16) o[k] = c[k]
+  for (const k of ['x', 'y']) if (Number.isInteger(c[k])) o[k] = c[k]
+  return typeof o.t === 'string' ? o : null
+}
 
-function join2(ws: Ws) {
-  const seat = seats.indexOf(null)
-  if (seat < 0) { ws.send({ t: 'full' }); ws.close(); return }
-  seats[seat] = ws
-  ready[seat] = true
-  ws.send({ t: 'seat', seat })
-  log(`player ${seat + 1} joined`)
+interface Seat { ws: Ws | null; token: string; name: string; ready: boolean; goneAt: number }
+interface Room {
+  code: string; build: string; quick: boolean
+  seats: (Seat | null)[]
+  tick: number; timer: NodeJS.Timeout | null; inbox: unknown[]; log: { n: number; cmds: unknown[] }[]
+  hashes: Map<number, number>
+}
+const rooms = new Map<string, Room>()
+const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ' // no I/O, they read as 1/0
+const newCode = () => { let c; do c = Array.from({ length: 4 }, () => LETTERS[Math.random() * LETTERS.length | 0]).join(''); while (rooms.has(c)); return c }
+const newRoom = (code: string, build: string, quick = false): Room =>
+  ({ code, build, quick, seats: [null, null], tick: 0, timer: null, inbox: [], log: [], hashes: new Map() })
+const others = (r: Room, seat: number) => r.seats[1 - seat]?.ws
+
+function joinRoom(ws: Ws, q: URLSearchParams) {
+  const build = (q.get('v') ?? '').slice(0, 40), name = (q.get('name') ?? '').replace(/[<>&"]/g, '').trim().slice(0, 16) || 'Player'
+  let want = (q.get('room') ?? 'LAN').toUpperCase().slice(0, 8)
+  if (want === 'NEW' || want === 'QUICK') {
+    const open = want === 'QUICK' && [...rooms.values()].find(r => r.quick && r.build === build && r.seats.includes(null) && !r.timer)
+    if (open) want = open.code
+    else {
+      if (rooms.size >= MAX_ROOMS) { ws.send({ t: 'error', text: 'The server is full. Try again in a minute.' }); return ws.close() }
+      const code = newCode()
+      rooms.set(code, newRoom(code, build, want === 'QUICK'))
+      want = code
+    }
+  }
+  let r = rooms.get(want)
+  if (!r && want === 'LAN') rooms.set('LAN', r = newRoom('LAN', build))
+  if (!r) { ws.send({ t: 'error', text: `No game with code ${want}.` }); return ws.close() }
+  if (r.build !== build) {
+    if (r.code !== 'LAN' || r.seats.some(Boolean)) { ws.send({ t: 'old', text: 'Your rival runs a different version of the game.' }); return ws.close() }
+    r.build = build // an empty LAN room follows whoever comes first
+  }
+  // rejoin by token, else the first free seat
+  const token = q.get('token')
+  let seat = token ? r.seats.findIndex(s => s && s.token === token && !s.ws) : -1
+  if (seat < 0) {
+    seat = r.seats.indexOf(null)
+    if (seat < 0) { ws.send({ t: 'full' }); return ws.close() }
+    r.seats[seat] = { ws: null, token: createHash('sha1').update(Math.random() + ':' + Date.now()).digest('hex').slice(0, 16), name, ready: true, goneAt: 0 }
+  }
+  const me = r.seats[seat]!
+  const room = r
+  me.ws = ws; me.goneAt = 0
+  ws.send({ t: 'seat', seat, code: r.code, token: me.token, name: me.name })
+  log(`${r.code}: ${me.name} took seat ${seat + 1}`)
+  if (r.timer) { // rejoin mid-match: replay everything so far, then live ticks follow
+    ws.send({ t: 'resume', opp: r.seats[1 - seat]?.name ?? '', ticks: r.log })
+    others(r, seat)?.send({ t: 'back' })
+  } else maybeStart(r)
   ws.onText = s => {
-    let m: { t?: string; cmds?: unknown[] }
+    let m: { t?: string; cmds?: unknown[]; n?: number; h?: number }
     try { m = JSON.parse(s) } catch { return }
     // commands are stamped with the sender's seat here, so nobody can play the other lane
-    if (m.t === 'cmds' && Array.isArray(m.cmds) && timer) for (const c of m.cmds.slice(0, 50)) if (c && typeof c === 'object') inbox.push({ ...c, p: seat })
-    if (m.t === 'rematch') { ready[seat] = true; maybeStart() }
+    if (m.t === 'cmds' && Array.isArray(m.cmds) && room.timer) for (const c of m.cmds.slice(0, 20)) {
+      const ok = c && typeof c === 'object' && clean(c, seat)
+      // per seat, so a spamming rival can't crowd out your own commands
+      if (ok && room.inbox.filter(x => (x as { p: number }).p === seat).length < 20) room.inbox.push(ok)
+    }
+    if (m.t === 'rematch') { me.ready = true; maybeStart(room) }
+    if (m.t === 'over') stop(room)
+    if (m.t === 'hash' && typeof m.n === 'number' && typeof m.h === 'number') {
+      const h = room.hashes.get(m.n)
+      if (h === undefined) { if (m.n % 100 === 0 && Math.abs(m.n - room.tick) < 2000 && room.hashes.size < 50) room.hashes.set(m.n, m.h) }
+      else { room.hashes.delete(m.n); if (h !== m.h) { log(`${room.code}: DESYNC at tick ${m.n}`); for (const o of room.seats) o?.ws?.send({ t: 'desync', n: m.n }) } }
+    }
   }
   ws.onClose = () => {
-    seats[seat] = null
-    ready[seat] = false
-    log(`player ${seat + 1} left`)
-    stop()
-    for (const o of seats) o?.send({ t: 'left' })
+    if (me.ws !== ws) return
+    me.ws = null
+    log(`${room.code}: ${me.name} left`)
+    if (!room.timer) { room.seats[seat] = null; others(room, seat)?.send({ t: 'left' }) } // lobby / after the match: free the seat
+    else { me.goneAt = Date.now(); others(room, seat)?.send({ t: 'gone', ms: FORFEIT_MS }) } // mid-match: hold it for a rejoin
+    if (!room.seats.some(s => s?.ws)) { stop(room); rooms.delete(room.code) }
   }
-  maybeStart()
 }
 
-function maybeStart() {
-  if (timer || !seats[0] || !seats[1] || !ready[0] || !ready[1]) {
-    for (const o of seats) o?.send({ t: 'waiting', players: seats.filter(Boolean).length })
+function maybeStart(r: Room) {
+  const [a, b] = r.seats
+  if (r.timer || !a?.ws || !b?.ws || !a.ready || !b.ready) {
+    for (const o of r.seats) o?.ws?.send({ t: 'waiting', players: r.seats.filter(s => s?.ws).length, code: r.code })
     return
   }
-  ready[0] = ready[1] = false
-  tick = 0; inbox = []
-  for (const o of seats) o?.send({ t: 'start' })
-  log('match started')
-  timer = setInterval(() => {
-    const cmds = inbox; inbox = []
-    for (const o of seats) o?.send({ t: 'tick', n: tick, cmds })
-    tick++
+  a.ready = b.ready = false
+  r.tick = 0; r.inbox = []; r.log = []; r.hashes.clear()
+  r.seats.forEach((o, i) => o?.ws?.send({ t: 'start', opp: r.seats[1 - i]!.name }))
+  log(`${r.code}: match started`)
+  r.timer = setInterval(() => {
+    const cmds = r.inbox; r.inbox = []
+    const pkt = { n: r.tick, cmds }
+    r.log.push(pkt)
+    for (const o of r.seats) o?.ws?.send({ t: 'tick', ...pkt })
+    r.tick++
+    if (r.tick % 20) return
+    r.seats.forEach((o, i) => { // a seat empty for 30 s forfeits
+      if (!o || o.ws || !o.goneAt || Date.now() - o.goneAt < FORFEIT_MS) return
+      log(`${r.code}: ${o.name} forfeits`)
+      stop(r)
+      r.seats[1 - i]?.ws?.send({ t: 'forfeit' })
+      r.seats[i] = null
+    })
   }, TICK_MS)
 }
-function stop() { if (timer) clearInterval(timer); timer = null }
+function stop(r: Room) { if (r.timer) clearInterval(r.timer); r.timer = null; r.seats.forEach((s, i) => { if (s && !s.ws) r.seats[i] = null }) }
 
 const log = (s: string) => console.log(`[${new Date().toLocaleTimeString()}] ${s}`)
 
