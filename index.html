@@ -199,13 +199,25 @@
       <h1>COG<span>/</span>RUSH</h1>
       <p class="label">Robot lane wars</p>
       <p>Maze your lane. Send robots into theirs.<br />Last core standing wins.</p>
-      <button id="tourBtn">Tutorial · 2 min</button>
-      <button data-diff="easy" class="alt">Easy bot</button>
-      <button data-diff="normal">Normal bot</button>
-      <button data-diff="hard" class="alt">Hard bot</button>
-      <button id="ladderBtn">Bot ladder · daily challenge</button>
-      <button id="onlineBtn">Online match · 2 players</button>
-      <button id="lanBtn" class="alt">LAN match · 2 players</button>
+      <div data-page="main">
+        <button id="tourBtn">Tutorial<small>Learn the basics in 2 min</small></button>
+        <button data-go="single">Single player<small>Bot matches and the bot ladder</small></button>
+        <button data-go="multi" id="multiBtn">Multiplayer<small>Play a friend online or on your network</small></button>
+      </div>
+      <div data-page="single" hidden>
+        <p class="label">Single player</p>
+        <button data-diff="easy" class="alt">Easy bot</button>
+        <button data-diff="normal">Normal bot</button>
+        <button data-diff="hard" class="alt">Hard bot</button>
+        <button id="ladderBtn">Bot ladder · daily challenge</button>
+        <button data-go="main" class="alt">‹ Back</button>
+      </div>
+      <div data-page="multi" hidden>
+        <p class="label">Multiplayer</p>
+        <button id="onlineBtn">Online match · 2 players</button>
+        <button id="lanBtn" class="alt">LAN match · 2 players</button>
+        <button data-go="main" class="alt">‹ Back</button>
+      </div>
       <button id="menuMute" class="ghost" aria-label="Sound on or off" style="width:44px;margin:12px auto 0"></button>
     </div>
   </div>

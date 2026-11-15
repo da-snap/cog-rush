@@ -190,7 +190,7 @@ const nick = () => (($<HTMLInputElement>('nick').value.trim() || store.get('nick
 function toMenu() {
   closeNet(); clearSession(); tourEnd()
   replay = null
-  $('end').hidden = true; $('lobby').hidden = true; $('ladder').hidden = true; $('online').hidden = true; $('menu').hidden = false
+  $('end').hidden = true; $('lobby').hidden = true; $('ladder').hidden = true; $('online').hidden = true; $('menu').hidden = false; menuPage('main')
   document.body.classList.add('menu'); g = null; startDemo(); sfx.stopMusic()
 }
 function connect(room: string, online: boolean, token = '', lostAt = 0) {
@@ -247,7 +247,8 @@ $<HTMLInputElement>('nick').value = store.get('nick') ?? ''
 $('nick').onchange = () => store.set('nick', nick())
 $('onlineBtn').onclick = () => { $('menu').hidden = true; $('online').hidden = false }
 if (!RELAY) $('onlineBtn').remove() // built without a relay address: no online play
-$('onlineBack').onclick = () => { $('online').hidden = true; $('menu').hidden = false }
+if (!document.querySelector('[data-page=multi] #onlineBtn, [data-page=multi] #lanBtn')) $('multiBtn').remove() // no way to play a human here
+$('onlineBack').onclick = () => { $('online').hidden = true; $('menu').hidden = false; menuPage('multi') }
 $('quickBtn').onclick = () => { $('online').hidden = true; connect('quick', true) }
 $('createBtn').onclick = () => { $('online').hidden = true; connect('new', true) }
 $('joinBtn').onclick = () => {
@@ -259,7 +260,10 @@ $('lobbyCancel').onclick = toMenu
 $('watch').onclick = () => { $('end').hidden = true; startReplay() }
 $('next').onclick = () => { if (mode.kind === 'ladder') play(RIVALS[mode.i + 1].st, { kind: 'ladder', i: mode.i + 1 }) }
 $('ladderBtn').onclick = () => { renderLadder(); $('menu').hidden = true; $('ladder').hidden = false }
-$('ladderBack').onclick = () => { $('ladder').hidden = true; $('menu').hidden = false }
+$('ladderBack').onclick = () => { $('ladder').hidden = true; $('menu').hidden = false; menuPage('single') }
+// main menu pages: Tutorial / Single player / Multiplayer, each submenu has a Back button
+function menuPage(p: string) { for (const el of document.querySelectorAll<HTMLElement>('[data-page]')) el.hidden = el.dataset.page !== p }
+for (const b of document.querySelectorAll<HTMLButtonElement>('[data-go]')) b.onclick = () => menuPage(b.dataset.go!)
 function renderLadder() {
   const beaten = ladderBeaten(), d = daily(today()), best = store.get('daily' + d.day)
   $('rivals').innerHTML = RIVALS.map((r, i) => `<button data-rival="${i}" class="${i <= beaten ? 'alt' : ''}" ${i > beaten + 1 ? 'disabled' : ''}>${i + 1}. ${r.name}${i <= beaten ? ' ✓' : ''}<small>${i > beaten + 1 ? 'locked' : r.blurb}</small></button>`).join('') +
