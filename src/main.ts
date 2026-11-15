@@ -243,10 +243,10 @@ function connect(room: string, online: boolean, token = '', lostAt = 0) {
 }
 $('lanBtn').onclick = () => connect('LAN', false)
 if (import.meta.env.VITE_NO_LAN) $('lanBtn').remove() // static hosting (GitHub Pages) has no LAN server
-if (!RELAY) $('onlineBtn').remove()
 $<HTMLInputElement>('nick').value = store.get('nick') ?? ''
 $('nick').onchange = () => store.set('nick', nick())
 $('onlineBtn').onclick = () => { $('menu').hidden = true; $('online').hidden = false }
+if (!RELAY) $('onlineBtn').remove() // built without a relay address: no online play
 $('onlineBack').onclick = () => { $('online').hidden = true; $('menu').hidden = false }
 $('quickBtn').onclick = () => { $('online').hidden = true; connect('quick', true) }
 $('createBtn').onclick = () => { $('online').hidden = true; connect('new', true) }
