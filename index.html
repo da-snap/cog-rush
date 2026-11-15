@@ -66,7 +66,7 @@
     /* mode tabs */
     #panel { padding: 8px 8px 8px; margin-bottom: 6px; clip-path: var(--cut-m); }
     #lane { touch-action: none; }
-    #tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }
+    #tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-bottom: 6px; }
     #tabs button { min-height: 44px; background: var(--hull); color: var(--dust); border: 0; border-bottom: 3px solid transparent; clip-path: none; font-weight: 700; letter-spacing: .06em; display: flex; align-items: center; justify-content: center; gap: 6px; }
     #tabs button.on { background: var(--plate); color: var(--white); border-bottom-color: var(--hazard); }
     .badge { background: var(--online); color: var(--online-ink); font-size: 11px; padding: 0 5px; }
@@ -107,6 +107,12 @@
     .tile.seal { box-shadow: inset 0 0 0 2px var(--rogue); }
     .tile:disabled { background: var(--hull); color: var(--white); opacity: .45; }
     .tile .ic { float: left; margin: 2px 6px 0 0; line-height: 0; }
+    .tile { position: relative; }
+    .tile.empty { background: transparent; color: var(--dust); box-shadow: inset 0 0 0 2px var(--seam); border: 0; text-align: center; }
+    .tile .prog { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--hazard); }
+    .grid.manage { margin-top: 4px; }
+    @media (max-width: 500px) { #body .grid.four .tile .ic { float: none; display: block; margin: 2px 0; } #body .grid.four .tile { padding: 4px 5px; } }
+    button.mini { min-height: 28px; padding: 2px 4px; font-size: 11px; background: var(--plate); color: var(--dust); box-shadow: inset 0 0 0 1px var(--seam2); }
     @media (max-width: 500px) { .tile kbd { display: none; } }
     .pick { min-height: 64px; padding: 4px 2px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 11px; background: var(--hull); color: var(--white); box-shadow: inset 0 0 0 2px var(--seam); text-transform: none; letter-spacing: 0; clip-path: var(--cut-m); position: relative; }
     .pick .ic { line-height: 0; }
@@ -164,7 +170,7 @@
         <div class="who" id="meRow"><span class="tag">YOU</span>
           <span class="stat" id="meLives" title="Core HP: robots that reach your exit damage it by size (Scout 1 … Colossus 15), double while sealed"><b id="lives"></b><small data-s="hp">hp</small></span>
           <span class="stat" title="Gold to spend"><b id="gold"></b><small data-s="g">gold</small></span>
-          <span class="stat" title="Income: paid every 5 s, +1 for every 25 gold of robots you send"><b id="income"></b><small id="incomeSub" data-s=""></small></span>
+          <span class="stat" title="Income after factory upkeep: paid every 5 s, +1 for every 25 gold of robots you send"><b id="income"></b><small id="incomeSub" data-s=""></small></span>
         </div>
         <div class="who bot"><span class="tag" id="botTag">BOT</span>
           <span class="stat" id="botLives"><b id="olives"></b><small data-s="hp">hp</small></span>
@@ -183,7 +189,6 @@
       <div id="tabs">
         <button data-tab="build" class="on">BUILD</button>
         <button data-tab="send">SEND</button>
-        <button data-tab="factories">FACTORIES</button>
       </div>
       <div id="body"></div>
     </div>
@@ -212,7 +217,7 @@
       <div class="help">
         <p><b>Core HP</b>: you have 100. A robot reaching your exit damages it by size: Scout 1, Drone 2, Repair/Shield/Splitter 3, Tank/Breaker 4, Colossus 15, double while your lane is sealed. 0 = you lose.</p>
         <p><b>Overdrive</b>: a release of 6 or more robots spawns with a 30% shield. EMP fields strip shields and jam Repair and Shield bots; Laser beams ignore shields.</p>
-        <p><b>Income</b>: paid every 5 s (the striped bar under the stats). Every 25 gold of robots you send adds +1 for the rest of the match. Each factory builds its own robots at the same time. Income freezes while your lane is sealed.</p>
+        <p><b>Income</b>: paid every 5 s (the striped bar under the stats). Every 25 gold of robots you send adds +1 for the rest of the match. You have 4 factory slots; slot 1 starts with the Scout factory. Tap an empty slot in Send to build another one (it takes a while to build and costs a little upkeep from every payout), tap the ⚙ under a factory to upgrade or demolish it. Each factory has its own queue and builds at the same time as the others. Income freezes while your lane is sealed.</p>
         <p><b>Build</b>: pick a tower (1–6 or the Build tab), then click a cell for one tower or click and drag for a row. The tower stays picked; stop with Esc, right-click or <b>Stop building</b>. Click a placed tower to upgrade or sell it.</p>
         <p><b>Counter</b>: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.</p>
       </div>
@@ -221,9 +226,8 @@
         <tr><td><kbd>U</kbd></td><td>Upgrade the selected tower</td></tr>
         <tr><td><kbd>A</kbd> / <kbd>B</kbd></td><td>Pick level 3 branch A or B</td></tr>
         <tr><td><kbd>S</kbd></td><td>Sell the selected tower</td></tr>
-        <tr><td><kbd>Q</kbd>–<kbd>I</kbd></td><td>Load Scout, Drone, Repair, Shield, Tank, Splitter, Breaker, Colossus</td></tr>
+        <tr><td><kbd>Q</kbd> <kbd>W</kbd> <kbd>E</kbd> <kbd>R</kbd></td><td>Load one robot from factory slot 1–4</td></tr>
         <tr><td><kbd>Space</kbd></td><td>Release your wave</td></tr>
-        <tr><td><kbd>F</kbd></td><td>Factories tab (the keys above also jump to their tab)</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Cancel the row you're dragging, else deselect the tower, else stop building (right-click works too)</td></tr>
         <tr><td><kbd>P</kbd></td><td>Pause</td></tr>
         <tr><td><kbd>H</kbd> / <kbd>?</kbd></td><td>This help</td></tr>

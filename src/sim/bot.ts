@@ -1,8 +1,8 @@
 // Bot player: reads the game state and returns ordinary commands, exactly like a human's input.
 // Deterministic (no randomness), so headless bot-vs-bot runs are reproducible.
-import { ARMOR_MULT_PCT, COLS, ROBOTS, ROBOT_KINDS, ROWS, SEND, TICK_HZ, TOWERS, type Armor, type RobotKind, type TowerKind } from './config.ts'
+import { ARMOR_MULT_PCT, COLS, ROBOTS, ROWS, SEND, TICK_HZ, TOWERS, type Armor, type RobotKind, type TowerKind } from './config.ts'
 import {
-  INF, buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, opponent, pathFrom, pathLen,
+  INF, buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, factoryLevel, factoryOf, opponent, pathFrom, pathLen,
   readyCount, secs, sellValue, towerStats, upgradeCost, type Cmd, type Game, type Lane, type Tower,
 } from './sim.ts'
 
@@ -10,17 +10,19 @@ export interface Strategy {
   name: string
   delay: number // reaction delay in ticks
   defense: number // share of spending on towers, 0..100; -1 = adaptive
-  factories: RobotKind[] // build order for the 4 slots
+  factories: RobotKind[] // build order for the 3 free slots (slot 1 is the Scout factory)
   burst: number // release when this many robots are ready (1 = trickle)
   counter: boolean // pick towers by incoming armor and sends by the opponent's weak spot
   sends?: RobotKind[] // only send these (default: anything unlocked)
   mazeTowers: number // cheap Gatling walls to build before adding damage towers
+  saveAt?: number // from this second on, stop sending to save up for the next planned factory (default 120, the sweet spot in run.ts sweeps)
+  upgradeAt?: number // seconds before factory upgrades start (default 240)
 }
 
 export const DIFFICULTY: Record<'easy' | 'normal' | 'hard', Strategy> = {
-  easy: { name: 'Easy', delay: 60, defense: 80, factories: ['tank'], burst: 1, counter: false, mazeTowers: 6 },
+  easy: { name: 'Easy', delay: 60, defense: 80, factories: ['tank'], burst: 1, counter: false, mazeTowers: 6, saveAt: INF },
   normal: { name: 'Normal', delay: 30, defense: 45, factories: ['tank', 'drone', 'shield'], burst: 4, counter: true, mazeTowers: 10 },
-  hard: { name: 'Hard', delay: 10, defense: -1, factories: ['drone', 'tank', 'splitter', 'breaker'], burst: 8, counter: true, mazeTowers: 12 },
+  hard: { name: 'Hard', delay: 10, defense: -1, factories: ['tank', 'drone', 'splitter'], burst: 8, counter: true, mazeTowers: 12 },
 }
 
 // Bot ladder: named rivals, each one a strategy with a clear counter, ordered from easy to hard.
@@ -60,7 +62,8 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
 
   // release whatever is ready once the burst size is reached (or the wave is full)
   const ready = readyCount(L)
-  if (!canRelease(g, L) && (ready >= st.burst || g.tick - mem.lastRelease > 25 * TICK_HZ)) {
+  const full = L.slots.every((f, i) => !f || canLoad(g, L, i) !== null && canLoad(g, L, i) !== 'Not enough gold') // nothing more fits in any queue
+  if (!canRelease(g, L) && (ready >= st.burst || full || g.tick - mem.lastRelease > 25 * TICK_HZ)) {
     cmds.push({ p, t: 'release' })
     mem.lastRelease = g.tick
   }
@@ -81,10 +84,7 @@ const COUNTER: Record<Threat, TowerKind> = { light: 'gatling', heavy: 'mortar', 
 // What is coming at us: robots seen so far plus the opponent's factories (full visibility).
 function threats(O: Lane, mem: BotMem): Record<Threat, number> {
   const w: Record<Threat, number> = { light: mem.armor.light + 50, heavy: mem.armor.heavy, shielded: mem.armor.shielded, air: mem.air }
-  for (const k of ROBOT_KINDS) {
-    if (k === 'scout' || !O.factories[k]) continue
-    w[ROBOTS[k].air ? 'air' : ROBOTS[k].armor] += 150 * O.factories[k]
-  }
+  for (const f of O.slots) if (f && f.kind !== 'scout') w[ROBOTS[f.kind].air ? 'air' : ROBOTS[f.kind].armor] += 150 * f.level
   return w
 }
 
@@ -135,7 +135,8 @@ function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: nu
       if (need === 'shielded' && towers.filter(x => x.kind === 'tesla').length > 3) kind = 'laser'
       if (towers.length > 18 && !towers.some(x => x.kind === 'emp')) kind = 'emp'
       // aura swarm coming: EMP jams Repair/Shield bots and strips shields
-      if ((O.factories.repair || O.factories.shield) && towers.filter(x => x.kind === 'emp').length < 1 + (O.factories.repair + O.factories.shield >> 1)) kind = 'emp'
+      const auras = factoryLevel(O, 'repair') + factoryLevel(O, 'shield')
+      if (auras && towers.filter(x => x.kind === 'emp').length < 1 + (auras >> 1)) kind = 'emp'
     } else {
       kind = (['gatling', 'mortar', 'tesla'] as TowerKind[])[towers.length % 3]
     }
@@ -207,14 +208,20 @@ function pickBranch(kind: TowerKind, need: Threat): string {
 
 function send(g: Game, L: Lane, O: Lane, st: Strategy): C[] {
   const t = secs(g)
-  // factories from the plan, one at a time, after the first minute
-  const next = st.factories.find(k => !L.factories[k])
-  if (next && t > 50 && !canFactory(L, next)) return [{ t: 'factory', kind: next }]
-  if (!next && t > 240) { // plan done: upgrade the factories
-    const up = st.factories.find(k => L.factories[k] < 3 && !canFactory(L, k) && L.gold > factoryCost(L, k) * 2)
-    if (up) return [{ t: 'factory', kind: up }]
+  // factories from the plan into the free slots, one at a time. No saving up: gold piles up once the
+  // factories we have can't turn it into robots fast enough, and that is the moment a new factory pays off.
+  const free = L.slots.indexOf(null)
+  const next = st.factories.find(k => !factoryOf(L, k) && (k !== 'colossus' || t >= 300 - FACTORY_LEAD_S))
+  if (next && free >= 0 && t > 50) {
+    if (!canFactory(L, free, next)) return [{ t: 'factory', slot: free, kind: next }]
+    const built = L.slots.filter(f => f && f.kind !== 'scout').length
+    if (t >= (st.saveAt ?? 120) * (built + 1)) return [] // first at 2:00, then 4:00, 6:00
   }
-  if (st.factories.includes('colossus') && t >= 300 && !L.factories.colossus && !canFactory(L, 'colossus')) return [{ t: 'factory', kind: 'colossus' }]
+  if (!next && t > (st.upgradeAt ?? 240)) { // plan done: upgrade plan factories in order, the Scout factory last
+    const up = L.slots.map((f, i) => ({ f, i })).filter(({ f, i }) => f && !canFactory(L, i) && L.gold > factoryCost(L, i) * 1.5 && (f.kind !== 'scout' || !st.sends || st.sends.includes('scout')))
+      .sort((a, b) => Number(a.f!.kind === 'scout') - Number(b.f!.kind === 'scout') || a.i - b.i)[0]
+    if (up) return [{ t: 'factory', slot: up.i }]
+  }
 
   // what does the opponent's defense deal to each robot type? send what survives best per gold
   const opp = O.towers.filter((x): x is Tower => !!x).map(x => ({ def: TOWERS[x.kind], dps: towerStats(x).dps }))
@@ -224,8 +231,9 @@ function send(g: Game, L: Lane, O: Lane, st: Strategy): C[] {
     for (const o of opp) if (r.air ? o.def.air : o.def.ground) dps += o.dps * ARMOR_MULT_PCT[o.def.dmg][r.armor] / 100
     return (r.hp * 1e6) / dps / r.sendCost
   }
-  const kinds = ROBOT_KINDS.filter(k => !canLoad(g, L, k) && (!st.sends || st.sends.includes(k)))
-  if (!kinds.length) return []
-  const kind = st.counter ? kinds.sort((a, b) => value(b) - value(a))[0] : kinds[kinds.length - 1]
-  return [{ t: 'load', kind }]
+  const slots = L.slots.map((f, i) => ({ k: f?.kind, i })).filter(x => !canLoad(g, L, x.i) && (!st.sends || st.sends.includes(x.k!)))
+  if (!slots.length) return []
+  const pick = st.counter ? slots.sort((a, b) => value(b.k!) - value(a.k!) || a.i - b.i)[0] : slots[slots.length - 1]
+  return [{ t: 'load', slot: pick.i }]
 }
+const FACTORY_LEAD_S = 30 // start the Colossus factory so it is ready when the 5:00 gate opens

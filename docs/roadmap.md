@@ -68,7 +68,7 @@ Goal: two lanes, real 1v1 economy, both controlled locally (hot-seat or second l
 - [x] Sim holds two lanes; a sent robot spawns at the other lane's spawn
 - [x] Commands become per-player (`player` field on every command)
 - [x] All 8 robots: Scout, Drone (straight flight), Repair bot (heal aura), Shield bot (shield aura), Tank, Splitter (3 Scouts on death), Breaker (hits towers next to path), Colossus (from 5:00)
-- [x] Factories: Scout free, 4 slots, build/upgrade L2–L3 (+25% HP, bigger wave cap), demolish without refund
+- [x] Factories: Scout free, 4 slots, build/upgrade L2–L3 (+25% HP, bigger wave cap), demolish without refund (reworked 2026-11-15, see Factory slots rework)
 - [x] Send queue: per-robot build time, one-tap Release, max per wave
 - [x] 4 s incoming preview event + banner with wave composition
 - [x] Income: +1 per 10 gold sent, tick every 10 s, frozen while sealed
@@ -155,6 +155,17 @@ Goal: two players on two devices.
 - [ ] Bot and lobby support for 3–4 players
 
 **Done when:** a 4-player match (any mix of humans and bots) plays to a single winner.
+
+---
+
+## Factory slots rework (2026-11-15, branch `factory-slots`)
+
+- [x] Send tab shows 4 slots; slot 1 starts with the Scout factory. Tap an empty slot to pick and build a factory, tap the ⚙ under a factory to upgrade or demolish it. The Factories tab is gone.
+- [x] One queue per factory, each builds in parallel; Release sends everything ready. Keys Q W E R load slot 1–4.
+- [x] Factories take time to build (10 s per 100 g, offline meanwhile; upgrades half that), cost upkeep (1 g per 100 g invested, taken from every payout) and refund half on demolish. One factory per robot type; the Scout factory can be demolished and rebuilt (100 g).
+- [x] Rebalance: Scout build 1 → 2 s and max wave 12 → 8, so one factory caps your send rate and a second one is the boost. Bots now save up for their plan factory at 2:00 (then 4:00, 6:00).
+- [x] Runner: pure Scouts 60% → 25%. Factory timing (save from X): Rush 85% at 1:00, 96% at 2:00, 85% at 4:00, 77% never; Swarm 31% at 1:00, 65% at 2:00, 67% at 3:00, 50% never.
+- [ ] Still open: Rush (thin defense, Tank factory) wins 96%; Heavy 44%, Air 29%. Sending-heavy dominance predates this change.
 
 ---
 

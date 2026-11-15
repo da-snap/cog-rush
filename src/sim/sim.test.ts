@@ -1,8 +1,8 @@
 // Run: npm test (node strips the types). Plain asserts, no framework.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { AURA, COLS, LIVES, MC, ROBOTS, SEND, START_INCOME, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
-import { INF, damage, newGame, spawn, step, towerStats, wouldSeal, type Cmd, type Game, type Lane } from './sim.ts'
+import { AURA, COLS, FACTORY, LIVES, MC, ROBOTS, SEND, START_INCOME, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
+import { INF, damage, factoryTicks, newGame, queuedCount, readyCount, spawn, step, towerStats, upkeep, wouldSeal, type Cmd, type Game, type Lane } from './sim.ts'
 
 type C = Cmd extends infer T ? T extends Cmd ? Omit<T, 'p'> : never : never
 const at = (p: number, cs: C[]) => cs.map(c => ({ ...c, p }) as Cmd)
@@ -63,7 +63,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
 {
   const cmds: Record<number, Cmd[]> = {
     5: at(0, [{ t: 'build', x: 4, y: 6, kind: 'gatling' }, { t: 'build', x: 6, y: 9, kind: 'mortar' }]),
-    6: at(1, [{ t: 'load', kind: 'scout' }, { t: 'load', kind: 'scout' }]),
+    6: at(1, [{ t: 'load', slot: 0 }, { t: 'load', slot: 0 }]),
     500: at(1, [{ t: 'release' }]), 900: at(0, [{ t: 'sell', x: 4, y: 6 }]),
   }
   const run = () => { const g = newGame(); for (let i = 0; i < 20 * 200; i++) step(g, cmds[i] ?? []); return JSON.stringify(g) }
@@ -175,21 +175,25 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   }
 }
 
-// 11. Sending: factories, queue build time, prep lock, preview, income, leak gold, bounty.
+// 11. Sending: factory construction, per-factory queues, prep lock, preview, income, leak gold, bounty.
 {
   const { g, L } = game()
   const R = g.lanes[1]
   L.gold = 10_000
-  step(g, at(0, [{ t: 'factory', kind: 'tank' }, { t: 'load', kind: 'tank' }, { t: 'load', kind: 'scout' }]))
-  assert.equal(L.factories.tank, 1)
-  assert.equal(L.queue.length, 2)
-  step(g, at(0, [{ t: 'release' }]))
-  assert.equal(L.queue.length, 2, 'nothing ready and still in prep')
+  step(g, at(0, [{ t: 'factory', slot: 1, kind: 'tank' }, { t: 'load', slot: 1 }, { t: 'load', slot: 0 }]))
+  assert.equal(L.slots[1]!.kind, 'tank')
+  assert.equal(queuedCount(L), 1, 'a factory under construction takes no orders')
+  while (L.slots[1]!.build) step(g, [])
+  assert.equal(g.tick, factoryTicks(ROBOTS.tank.factoryCost), 'construction time')
+  step(g, at(0, [{ t: 'load', slot: 1 }, { t: 'load', slot: 0 }]))
+  assert.equal(L.slots[0]!.queue.length, 2)
+  assert.equal(L.slots[1]!.queue.length, 1)
+  for (let i = 0; i < ROBOTS.tank.buildS * TICK_HZ; i++) step(g, [])
+  assert.equal(readyCount(L), 3, 'each factory builds its own queue in parallel')
   while (g.tick < 21 * TICK_HZ) step(g, [])
-  assert.equal(L.queue.filter(q => q.left === 0).length, 2, 'both built after 6 s')
   const income = L.income
   step(g, at(0, [{ t: 'release' }]))
-  assert.equal(L.income, START_INCOME + Math.floor((ROBOTS.tank.sendCost + ROBOTS.scout.sendCost) / SEND.goldPerIncome))
+  assert.equal(L.income, START_INCOME + Math.floor((ROBOTS.tank.sendCost + 2 * ROBOTS.scout.sendCost) / SEND.goldPerIncome))
   assert.ok(L.income > income)
   assert.equal(R.incoming.length, 1)
   for (let i = 0; i < 4 * TICK_HZ + 1; i++) step(g, [])
@@ -201,19 +205,31 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   assert.ok(L.gold - gold >= Math.floor(ROBOTS.scout.sendCost / 2), 'leak pays the sender')
 }
 
-// 12. Factory slots, demolish, wave cap, colossus gate.
+// 12. Factory slots: unique kinds, upgrade, demolish refund, upkeep, wave cap, colossus gate.
 {
   const { g, L } = game()
   L.gold = 100_000
-  step(g, at(0, (['drone', 'repair', 'shield', 'tank', 'splitter'] as RobotKind[]).map(kind => ({ t: 'factory', kind }) as C)))
-  assert.equal(L.factories.splitter, 0, 'only 4 slots')
-  step(g, at(0, [{ t: 'demolish', kind: 'drone' }, { t: 'factory', kind: 'splitter' }, { t: 'factory', kind: 'splitter' }]))
-  assert.equal(L.factories.drone, 0)
-  assert.equal(L.factories.splitter, 2)
-  step(g, at(0, Array.from({ length: 10 }, () => ({ t: 'load', kind: 'splitter' }) as C)))
-  assert.equal(L.queue.length, 4, 'L2 wave cap is 3 * 1.5')
-  step(g, at(0, [{ t: 'demolish', kind: 'tank' }, { t: 'factory', kind: 'colossus' }, { t: 'load', kind: 'colossus' }]))
-  assert.equal(L.queue.length, 4, 'colossus locked before 5:00')
+  step(g, at(0, (['drone', 'repair', 'shield', 'tank'] as RobotKind[]).map((kind, i) => ({ t: 'factory', slot: i + 1, kind }) as C)))
+  assert.deepEqual(L.slots.map(f => f?.kind), ['scout', 'drone', 'repair', 'shield'], `${FACTORY.slots} slots, slot 1 is the Scout factory`)
+  step(g, at(0, [{ t: 'demolish', slot: 0 }, { t: 'factory', slot: 0, kind: 'drone' }]))
+  assert.equal(L.slots[0], null, 'one factory per robot type')
+  const gold = L.gold
+  step(g, at(0, [{ t: 'demolish', slot: 1 }]))
+  assert.equal(L.gold, gold + Math.floor(ROBOTS.drone.factoryCost * FACTORY.refundPct / 100), 'demolish refunds half')
+  step(g, at(0, [{ t: 'factory', slot: 1, kind: 'splitter' }]))
+  while (L.slots[1]!.build) step(g, [])
+  step(g, at(0, [{ t: 'factory', slot: 1 }]))
+  assert.equal(L.slots[1]!.level, 2)
+  step(g, at(0, [{ t: 'factory', slot: 1 }]))
+  assert.equal(L.slots[1]!.level, 2, 'no upgrade while the last one is still building')
+  assert.equal(upkeep(L), Math.floor(2 * ROBOTS.splitter.factoryCost * FACTORY.upkeepPct / 100) + 2 * Math.floor(150 * FACTORY.upkeepPct / 100))
+  while (L.slots[1]!.build) step(g, [])
+  step(g, at(0, Array.from({ length: 10 }, () => ({ t: 'load', slot: 1 }) as C)))
+  assert.equal(L.slots[1]!.queue.length, 4, 'L2 wave cap is 3 * 1.5')
+  step(g, at(0, [{ t: 'demolish', slot: 2 }, { t: 'factory', slot: 2, kind: 'colossus' }]))
+  while (L.slots[2]!.build) step(g, [])
+  step(g, at(0, [{ t: 'load', slot: 2 }]))
+  assert.equal(L.slots[2]!.queue.length, 0, 'colossus locked before 5:00')
 }
 
 // 13. Splitter splits into 3 Scouts; Shield bot shields; Repair heals.
@@ -249,8 +265,8 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   for (let i = 0; i < 20 * TICK_HZ && r.hp > 0; i++) quiet(g)
   assert.equal(R.lives, before - ROBOTS.tank.leak)
   L.gold = 10_000
-  step(g, at(0, Array.from({ length: SEND.burstMin }, () => ({ t: 'load', kind: 'scout' }) as C)))
-  for (let i = 0; i < 10 * TICK_HZ; i++) quiet(g)
+  step(g, at(0, Array.from({ length: SEND.burstMin }, () => ({ t: 'load', slot: 0 }) as C)))
+  for (let i = 0; i < SEND.burstMin * ROBOTS.scout.buildS * TICK_HZ; i++) quiet(g)
   quiet(g, at(0, [{ t: 'release' }]))
   assert.ok(R.incoming[0].robots.every(s => s.shield! > 0), 'burst shield')
 }
@@ -333,7 +349,7 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   const { g } = game()
   const before = JSON.stringify(g.lanes)
   const junk = [{ t: 'build', x: 1.5, y: 6, kind: 'gatling' }, { t: 'build', x: 3, y: 6, kind: 'constructor' }, { t: 'build', x: 99, y: 6, kind: 'gatling' },
-    { t: 'factory', kind: '__proto__' }, { t: 'load', kind: 'toString' }, { t: 'demolish', kind: 'nope' }, { t: 'upgrade', x: 2, y: 6, branch: {} }, { t: 'sell', x: -1, y: 'a' }, { t: 'boom' }]
+    { t: 'factory', kind: '__proto__', slot: 1 }, { t: 'factory', slot: '__proto__' }, { t: 'factory', slot: 1.5, kind: 'tank' }, { t: 'load', slot: 'toString' }, { t: 'load', slot: -1 }, { t: 'demolish', slot: 9 }, { t: 'demolish', slot: 'length' }, { t: 'upgrade', x: 2, y: 6, branch: {} }, { t: 'sell', x: -1, y: 'a' }, { t: 'boom' }]
   step(g, junk.map(c => ({ ...c, p: 0 }) as unknown as Cmd))
   g.tick--; const after = JSON.stringify(g.lanes)
   assert.equal(after.replace(/"gold":\d+/g, ''), before.replace(/"gold":\d+/g, ''), 'junk commands change nothing')

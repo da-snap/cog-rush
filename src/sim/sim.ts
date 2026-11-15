@@ -11,10 +11,10 @@ export type Cmd = { p: number } & (
   | { t: 'build'; x: number; y: number; kind: TowerKind }
   | { t: 'sell'; x: number; y: number }
   | { t: 'upgrade'; x: number; y: number; branch?: string }
-  | { t: 'load'; kind: RobotKind }
+  | { t: 'load'; slot: number }
   | { t: 'release' }
-  | { t: 'factory'; kind: RobotKind } // build or upgrade
-  | { t: 'demolish'; kind: RobotKind }
+  | { t: 'factory'; slot: number; kind?: RobotKind } // kind builds in an empty slot, without it upgrades the slot's factory
+  | { t: 'demolish'; slot: number }
 )
 export type FxKind = 'line' | 'boom' | 'pulse' | 'beam'
 export type Ev = { p: number } & (
@@ -40,13 +40,18 @@ export interface Robot {
 }
 export interface Burn { x: number; y: number; ticks: number; dmg: number }
 export interface Spawn { kind: RobotKind; hp: number; owner: number; shield?: number }
+// One per send slot (Daniel 2026-11-15): each factory has its own queue and builds one robot at a time.
+export interface Factory {
+  kind: RobotKind; level: number; invested: number
+  build: number // ticks until construction or an upgrade is done; the factory is offline until then
+  queue: number[] // build ticks left per queued robot, 0 = ready to release
+}
 export interface Lane {
   p: number; gold: number; income: number; lives: number
   towers: (Tower | null)[] // by cell index y*COLS+x
   robots: Robot[]; burns: Burn[]
   openDist: number[]; breachDist: number[]; sealed: boolean
-  factories: Record<RobotKind, number> // level, 0 = not built
-  queue: { kind: RobotKind; left: number }[] // build ticks left, 0 = ready to release
+  slots: (Factory | null)[]
   incoming: { at: number; robots: Spawn[] }[] // released at us, visible before they spawn
   spawnQueue: Spawn[]
   released: number // gold of robots released, drives income
@@ -77,8 +82,8 @@ export function newLane(p: number): Lane {
     p, gold: START_GOLD, income: START_INCOME, lives: LIVES,
     towers: Array(COLS * ROWS).fill(null), robots: [], burns: [],
     openDist: [], breachDist: [], sealed: false,
-    factories: { scout: 1, drone: 0, repair: 0, shield: 0, tank: 0, splitter: 0, breaker: 0, colossus: 0 },
-    queue: [], incoming: [], spawnQueue: [], released: 0,
+    slots: [{ kind: 'scout', level: 1, invested: 0, build: 0, queue: [] }, ...Array(FACTORY.slots - 1).fill(null)],
+    incoming: [], spawnQueue: [], released: 0,
     stats: { sent: 0, leaksTaken: 0, kills: 0, towerGold: 0, sendGold: 0, income: [START_INCOME] },
   }
   recompute(L)
@@ -244,31 +249,44 @@ function stepFrom(dist: number[], towers: (Tower | null)[], cur: number): number
 
 export const robotHp = (kind: RobotKind, level: number) => Math.floor(ROBOTS[kind].hp * MC * SEND.hpPct / 100 * (100 + FACTORY.hpPctPerLevel * (level - 1)) / 100)
 export const waveCap = (kind: RobotKind, level: number) => Math.floor(ROBOTS[kind].maxWave * (100 + FACTORY.waveCapPctPerLevel * (level - 1)) / 100)
-export const slotsUsed = (L: Lane) => Object.entries(L.factories).filter(([k, l]) => k !== 'scout' && l > 0).length
-export const factoryCost = (L: Lane, kind: RobotKind) => {
-  const lvl = L.factories[kind]
-  if (!lvl) return ROBOTS[kind].factoryCost
-  return (kind === 'scout' ? FACTORY.scoutUpgradeCost : ROBOTS[kind].factoryCost) * FACTORY.upgradeCostMult[lvl - 1]
+const slotOk = (s: unknown): s is number => Number.isInteger(s) && (s as number) >= 0 && (s as number) < FACTORY.slots
+export const factoryOf = (L: Lane, kind: RobotKind) => L.slots.find(f => f?.kind === kind) ?? null
+export const factoryLevel = (L: Lane, kind: RobotKind) => factoryOf(L, kind)?.level ?? 0
+// new factory: its build cost; upgrade: 1x then 2x the build cost (like towers)
+export const factoryCost = (L: Lane, slot: number, kind?: RobotKind) => {
+  const f = L.slots[slot]
+  return f ? ROBOTS[f.kind].factoryCost * FACTORY.upgradeCostMult[f.level - 1] : kind ? ROBOTS[kind].factoryCost : 0
 }
+export const factoryTicks = (cost: number) => Math.floor(cost * TICK_HZ * FACTORY.buildSPer100g / 100)
+// gold taken from every income tick, so a factory has to pay for itself with sends
+export const upkeep = (L: Lane) => L.slots.reduce((n, f) => n + (f ? Math.floor(f.invested * FACTORY.upkeepPct / 100) : 0), 0)
 
-export function canFactory(L: Lane, kind: RobotKind): string | null {
-  const lvl = L.factories[kind]
-  if (lvl >= 3) return 'Max level'
-  if (!lvl && slotsUsed(L) >= FACTORY.slots) return 'No free slot'
-  if (L.gold < factoryCost(L, kind)) return 'Not enough gold'
+export function canFactory(L: Lane, slot: number, kind?: RobotKind): string | null {
+  if (!slotOk(slot)) return 'No such slot'
+  const f = L.slots[slot]
+  if (f) {
+    if (f.build) return 'Under construction'
+    if (f.level >= 3) return 'Max level'
+  } else {
+    if (!kind) return 'Pick a factory'
+    if (factoryOf(L, kind)) return 'Already built'
+  }
+  if (L.gold < factoryCost(L, slot, kind)) return 'Not enough gold'
   return null
 }
 
-export function canLoad(g: Game, L: Lane, kind: RobotKind): string | null {
-  const lvl = L.factories[kind]
-  if (!lvl) return 'Build the factory first'
-  if (kind === 'colossus' && secs(g) < SEND.colossusFromS) return 'Available from 5:00'
-  if (L.queue.filter(q => q.kind === kind).length >= waveCap(kind, lvl)) return 'Wave is full'
-  if (L.gold < ROBOTS[kind].sendCost) return 'Not enough gold'
+export function canLoad(g: Game, L: Lane, slot: number): string | null {
+  const f = slotOk(slot) ? L.slots[slot] : null
+  if (!f) return 'Empty slot'
+  if (f.build) return 'Under construction'
+  if (f.kind === 'colossus' && secs(g) < SEND.colossusFromS) return 'Available from 5:00'
+  if (f.queue.length >= waveCap(f.kind, f.level)) return 'Wave is full'
+  if (L.gold < ROBOTS[f.kind].sendCost) return 'Not enough gold'
   return null
 }
 
-export const readyCount = (L: Lane) => L.queue.filter(q => q.left === 0).length
+export const readyCount = (L: Lane) => L.slots.reduce((n, f) => n + (f ? f.queue.filter(x => x === 0).length : 0), 0)
+export const queuedCount = (L: Lane) => L.slots.reduce((n, f) => n + (f?.queue.length ?? 0), 0)
 
 export function canRelease(g: Game, L: Lane): string | null {
   if (secs(g) < SEND.prepS) return 'Sending unlocks after the prep phase'
@@ -290,7 +308,7 @@ export function step(g: Game, cmds: Cmd[]): void {
 
   // income (frozen while sealed)
   if (g.tick > 0 && g.tick % (INCOME_EVERY_S * TICK_HZ) === 0) for (const L of g.lanes) {
-    if (!L.sealed) L.gold += L.income
+    if (!L.sealed) L.gold = Math.max(0, L.gold + L.income - upkeep(L))
     L.stats.income.push(L.income)
   }
 
@@ -307,9 +325,11 @@ export function step(g: Game, cmds: Cmd[]): void {
   }
 
   for (const L of g.lanes) {
-    // every factory builds its own robots, one at a time (fun plan: send throughput grows with factories)
-    const busy = new Set<RobotKind>()
-    for (const q of L.queue) if (q.left > 0 && !busy.has(q.kind)) { busy.add(q.kind); q.left-- }
+    // every factory builds its own queue, one robot at a time, once it is constructed
+    for (const f of L.slots) if (f) {
+      if (f.build) f.build--
+      else { const i = f.queue.findIndex(x => x > 0); if (i >= 0) f.queue[i]-- }
+    }
     // released waves land after the preview
     while (L.incoming.length && L.incoming[0].at <= g.tick) L.spawnQueue.push(...L.incoming.shift()!.robots)
     if (L.spawnQueue.length) { spawnGroup(g, L, L.spawnQueue); L.spawnQueue = [] }
@@ -368,7 +388,7 @@ function apply(g: Game, c: Cmd) {
   if (!L || L.lives <= 0) return
   // online, commands come from the rival's device: anything malformed is dropped, never thrown on
   if ('x' in c && !(Number.isInteger(c.x) && Number.isInteger(c.y) && inLane(c.x, c.y))) return
-  if ('kind' in c && !Object.hasOwn(c.t === 'build' ? TOWERS : ROBOTS, c.kind)) return
+  if ('kind' in c && !Object.hasOwn(c.t === 'build' ? TOWERS : ROBOTS, c.kind as string)) return
   if ('branch' in c && c.branch !== undefined && typeof c.branch !== 'string') return
   switch (c.t) {
     case 'build': {
@@ -400,33 +420,36 @@ function apply(g: Game, c: Cmd) {
       return recompute(L)
     }
     case 'factory': {
-      if (canFactory(L, c.kind)) return
-      L.gold -= factoryCost(L, c.kind)
-      L.factories[c.kind]++
+      if (canFactory(L, c.slot, c.kind)) return
+      const cost = factoryCost(L, c.slot, c.kind), f = L.slots[c.slot]
+      L.gold -= cost
+      if (f) { f.level++; f.invested += cost; f.build = factoryTicks(cost * FACTORY.upgradeTimePct / 100) }
+      else L.slots[c.slot] = { kind: c.kind!, level: 1, invested: cost, build: factoryTicks(cost), queue: [] }
       return
     }
     case 'demolish': {
-      if (c.kind === 'scout' || !L.factories[c.kind]) return
-      L.factories[c.kind] = 0 // no refund for the factory, queued robots of that type are refunded
-      for (const q of L.queue) if (q.kind === c.kind) L.gold += ROBOTS[q.kind].sendCost
-      L.queue = L.queue.filter(q => q.kind !== c.kind)
+      const f = slotOk(c.slot) ? L.slots[c.slot] : null
+      if (!f) return
+      L.gold += f.queue.length * ROBOTS[f.kind].sendCost + Math.floor(f.invested * FACTORY.refundPct / 100) // queued robots back in full
+      L.slots[c.slot] = null
       return
     }
     case 'load': {
-      if (canLoad(g, L, c.kind)) return
-      L.gold -= ROBOTS[c.kind].sendCost
-      L.stats.sendGold += ROBOTS[c.kind].sendCost
-      L.queue.push({ kind: c.kind, left: Math.floor(ROBOTS[c.kind].buildS * TICK_HZ * FACTORY.buildPctByLevel[L.factories[c.kind] - 1] / 100) })
+      if (canLoad(g, L, c.slot)) return
+      const f = L.slots[c.slot]!
+      L.gold -= ROBOTS[f.kind].sendCost
+      L.stats.sendGold += ROBOTS[f.kind].sendCost
+      f.queue.push(Math.floor(ROBOTS[f.kind].buildS * TICK_HZ * FACTORY.buildPctByLevel[f.level - 1] / 100))
       return
     }
     case 'release': {
       if (canRelease(g, L)) return
-      const ready = L.queue.filter(q => q.left === 0)
-      L.queue = L.queue.filter(q => q.left > 0)
+      const ready: Factory[] = [] // one entry per ready robot, in slot order
+      for (const f of L.slots) if (f) { for (const x of f.queue) if (!x) ready.push(f); f.queue = f.queue.filter(x => x > 0) }
       const target = g.lanes[opponent(g, L.p)]
       const burst = ready.length >= SEND.burstMin
       const robots = ready.map(q => {
-        const hp = Math.floor(robotHp(q.kind, L.factories[q.kind] || 1) * g.sendHpBp / 10000)
+        const hp = Math.floor(robotHp(q.kind, q.level) * g.sendHpBp / 10000)
         return { kind: q.kind, hp, owner: L.p, shield: burst ? Math.floor(hp * SEND.burstShieldPct / 100) : 0 }
       })
       for (const q of ready) L.released += ROBOTS[q.kind].sendCost

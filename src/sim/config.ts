@@ -101,9 +101,10 @@ export interface RobotDef {
   towerDps: number // open design gap 1: placeholder damage vs towers (Breach multiplies by 3)
   radiusMc: number // crowd footprint (Daniel 2026-11-14): 3 Scouts or 2 mid-size fit a 1-cell gap, a Colossus fills it; air ignores it
 }
+// send slots rebalance (2026-11-15): Scout build 1→2 s, wave 12→8, so one factory caps your send rate and a second one is a real boost
 // balance vs GDD: Scout 60→40 HP, Drone 120→90, Tank 400→480, Breaker 300→360 (speed decides exposure in a maze)
 export const ROBOTS: Record<RobotKind, RobotDef> = {
-  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, buildS: 1, maxWave: 12, factoryCost: 0, leak: 1, towerDps: 10, radiusMc: 160 },
+  scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, buildS: 2, maxWave: 8, factoryCost: 100, leak: 1, towerDps: 10, radiusMc: 160 },
   drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, buildS: 3, maxWave: 6, factoryCost: 120, leak: 2, towerDps: 0, radiusMc: 0 },
   repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10, radiusMc: 225 },
   shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10, radiusMc: 225 },
@@ -117,10 +118,14 @@ export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 export const AURA = { repairMc: 2000, repairPctPerS: 1.5, shieldMc: 2000, shieldPct: 25 } // balance: % of the target's max HP (flat GDD values break once HP scales; healing stacks up over a long maze)
 
 // Factories and sending. Values marked "default" are not in the GDD yet.
+// Send slots (Daniel 2026-11-15): 4 slots, slot 1 starts with the Scout factory; any factory can be upgraded or demolished.
 export const FACTORY = {
-  slots: 4, // Scout is free and uses no slot
+  slots: 4,
   upgradeCostMult: [1, 2], // default: L2 = 1x factory cost, L3 = 2x (like towers)
-  scoutUpgradeCost: 100, // default: Scout factory has no build cost to scale from
+  buildSPer100g: 10, // construction time: a 150g factory takes 15 s, offline meanwhile
+  upgradeTimePct: 50, // an upgrade takes half the construction time of its cost, the factory pauses meanwhile
+  upkeepPct: 1, // gold per income tick per 100g invested in a factory
+  refundPct: 50, // demolish gives back half of what went into the factory
   hpPctPerLevel: 25,
   buildPctByLevel: [100, 75, 50], // fun plan: upgraded factories build faster
   waveCapPctPerLevel: 50, // default: max per wave +50% per level

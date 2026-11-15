@@ -5,8 +5,8 @@ import {
   type RobotKind, type TowerKind,
 } from './sim/config.ts'
 import {
-  buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, newGame, readyCount, secs, sellValue,
-  slotsUsed, step, towerStats, upgradeCost, waveCap, wouldSeal, type Cmd, type Game, type Lane, type Tower,
+  buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, factoryTicks, newGame, queuedCount, readyCount, secs, sellValue,
+  step, towerStats, upgradeCost, upkeep, waveCap, wouldSeal, type Cmd, type Game, type Lane, type Tower,
 } from './sim/sim.ts'
 import { DIFFICULTY, RIVALS, botThink, newMem, radar, type BotMem, type Strategy, type Threat } from './sim/bot.ts'
 import { C, ROBOT_ICON, TOWER_ICON, hex, robotColor, svgIcon, towerColor } from './ui.ts'
@@ -56,9 +56,9 @@ const rival = () => (net ? net.opp || 'Rival' : 'Bot')
 let diff: keyof typeof DIFFICULTY = 'normal'
 let pending: Cmd[] = []
 let paused = false
-let tab: 'build' | 'send' | 'factories' = 'build'
+let tab: 'build' | 'send' = 'build'
 let sel: { x: number; y: number } | null = null
-let selFactory: RobotKind = 'scout'
+let slotView: { slot: number; mode: 'pick' | 'manage' } | null = null // send tab: picking a factory for an empty slot, or managing a built one
 let view = ME // which lane is shown big on a phone
 let prev = new Map<number, { x: number; y: number }>()
 let drag: { cells: number[]; last: number } | null = null
@@ -79,7 +79,7 @@ const ladderBeaten = () => Number(store.get('ladder') ?? -1)
 const MODS: { name: string; desc: string; apply: (g: Game) => void }[] = [
   { name: 'Gold rush', desc: 'Both start with 500 gold', apply: g => { for (const L of g.lanes) L.gold = 500 } },
   { name: 'Glass core', desc: 'Both cores have only 40 HP', apply: g => { for (const L of g.lanes) L.lives = 40 } },
-  { name: 'Drone day', desc: 'Both start with a Drone factory', apply: g => { for (const L of g.lanes) L.factories.drone = 1 } },
+  { name: 'Drone day', desc: 'Both start with a Drone factory', apply: g => { for (const L of g.lanes) L.slots[1] = { kind: 'drone', level: 1, invested: 0, build: 0, queue: [] } } },
   { name: 'Underdog', desc: 'You start with 300 gold, the rival with +10 income', apply: g => { g.lanes[ME].gold = 300; g.lanes[OPP].income += 10 } },
 ]
 const today = () => Math.floor(Date.now() / 86_400_000)
@@ -118,7 +118,7 @@ function begin() {
   for (const id of ['botTag', 'oppView']) { const el = document.getElementById(id); if (el) el.textContent = rival().toUpperCase() }
   $('pause').hidden = !!net
   if (!replay) rec = { log: new Map(), lives: [[LIVES], [LIVES]], income: [[0], [0]], lost: [new Map(), new Map()] }
-  pending = []; sel = null; view = ME; paused = false; lastLives = [LIVES, LIVES]; prev.clear(); tab = 'build'; buildKind = null; demo = null
+  pending = []; sel = null; view = ME; paused = false; lastLives = [LIVES, LIVES]; prev.clear(); tab = 'build'; slotView = null; buildKind = null; demo = null
   sfx.unlockAudio(); sfx.setIntensity(0, true); sfx.startMusic(); sfx.horn()
   $('menu').hidden = true
   document.body.classList.remove('menu')
@@ -416,7 +416,7 @@ function stopBuilding() {
 
 // --- panel -------------------------------------------------------------------
 
-for (const b of document.querySelectorAll<HTMLButtonElement>('#tabs button')) b.onclick = () => { tab = b.dataset.tab as typeof tab; renderPanel(true) }
+for (const b of document.querySelectorAll<HTMLButtonElement>('#tabs button')) b.onclick = () => { tab = b.dataset.tab as typeof tab; slotView = null; renderPanel(true) }
 
 body.addEventListener('pointerdown', e => {
   const b = (e.target as HTMLElement).closest('button')
@@ -431,13 +431,18 @@ function act(a: string, arg?: string) {
   switch (a) {
     case 'upgrade': if (sel) { const ok = !canUpgrade(L, sel.x, sel.y, arg); if (ok) { pending.push({ p: ME, t: 'upgrade', x: sel.x, y: sel.y, branch: arg }); sfx.upgrade() } else sfx.deny() } break
     case 'sell': if (sel) { pending.push({ p: ME, t: 'sell', x: sel.x, y: sel.y }); sel = null; sfx.sell() } break
-    case 'load': if (canLoad(g, L, arg as RobotKind)) sfx.deny(); else { pending.push({ p: ME, t: 'load', kind: arg as RobotKind }); sfx.click() } break
+    case 'load': if (canLoad(g, L, +arg!)) sfx.deny(); else { pending.push({ p: ME, t: 'load', slot: +arg! }); sfx.click() } break
     case 'release': if (canRelease(g, L)) sfx.deny(); else { pending.push({ p: ME, t: 'release' }); sfx.release() } break
-    case 'pickFactory': selFactory = arg as RobotKind; sfx.click(); break
+    case 'slot': slotView = { slot: +arg!, mode: L.slots[+arg!] ? 'manage' : 'pick' }; sfx.click(); break
+    case 'slotBack': slotView = null; break
     case 'pick': return pickTower(arg as TowerKind)
     case 'stop': return stopBuilding()
-    case 'factory': if (canFactory(L, selFactory)) sfx.deny(); else { pending.push({ p: ME, t: 'factory', kind: selFactory }); sfx.upgrade() } break
-    case 'demolish': pending.push({ p: ME, t: 'demolish', kind: selFactory }); break
+    case 'factory': { // arg: robot kind for an empty slot, none = upgrade
+      const slot = slotView?.slot ?? -1, kind = arg as RobotKind | undefined
+      if (canFactory(L, slot, kind)) { sfx.deny(); break }
+      pending.push({ p: ME, t: 'factory', slot, ...(kind ? { kind } : {}) }); sfx.upgrade(); slotView = null; break
+    }
+    case 'demolish': if (slotView) { pending.push({ p: ME, t: 'demolish', slot: slotView.slot }); sfx.sell(); slotView = null } break
   }
   renderPanel(true)
 }
@@ -449,7 +454,7 @@ function renderPanel(force = false) {
   const ready = readyCount(g.lanes[ME])
   const sendTab = document.querySelector<HTMLButtonElement>('[data-tab=send]')!, badge = ready ? `SEND <span class="badge">${ready}</span>` : 'SEND'
   if (sendTab.innerHTML !== badge) sendTab.innerHTML = badge
-  const html = mainLane() !== ME ? opponentHtml(g, g.lanes[view]) : tab === 'build' ? buildHtml(g, g.lanes[ME]) : tab === 'send' ? sendHtml(g, g.lanes[ME]) : factoryHtml(g.lanes[ME])
+  const html = mainLane() !== ME ? opponentHtml(g, g.lanes[view]) : tab === 'build' ? buildHtml(g, g.lanes[ME]) : slotView?.mode === 'pick' ? pickHtml(g.lanes[ME], slotView.slot) : slotView ? manageHtml(g.lanes[ME], slotView.slot) : sendHtml(g, g.lanes[ME])
   if (html !== lastHtml || force) { body.innerHTML = html; lastHtml = html }
 }
 
@@ -487,41 +492,53 @@ function radarHtml(L: Lane, title: string) {
   return `<div class="radar"><span>${title}</span>` + THREATS.map(([k, n]) => `<i class="${any && k === weak ? 'weak' : ''}" title="${BEST[k]} beats ${n.toLowerCase()}"><b style="width:${Math.max(4, r[k])}%"></b>${n}</i>`).join('') + '</div>'
 }
 
+// send tab: the 4 factory slots. Tap a factory to load one robot into its own queue, the bar below it to
+// upgrade or demolish it; tap an empty slot to build a factory there.
+const secsOf = (ticks: number) => `${Math.ceil(ticks / TICK_HZ)}s`
 function sendHtml(g: Game, L: Lane): string {
-  const ready = readyCount(L), building = L.queue.length - ready
+  const ready = readyCount(L), up = upkeep(L)
   const prep = secs(g) < SEND.prepS
-  const cur = L.queue.find(q => q.left > 0)
-  const build = cur ? ` · building ${ROBOTS[cur.kind].name} ${Math.ceil(cur.left / TICK_HZ)}s${building > 1 ? ` (+${building - 1} queued)` : ''}` : ''
-  const info = (prep ? `Release unlocks in ${Math.ceil(SEND.prepS - secs(g))}s` : `<b>${ready}</b> ready to release`) + build
-  const tiles = ROBOT_KINDS.map((k, i) => {
-    const lvl = L.factories[k], q = L.queue.filter(x => x.kind === k).length
-    const why = canLoad(g, L, k)
-    return btn('load', short(k), {
-      arg: k, cls: 'tile', off: !!why, icon: svgIcon(ROBOT_ICON[k], robotColor(k), 18), key: 'QWERTYUI'[i],
-      sub: lvl ? `${ROBOTS[k].sendCost}g · ${q}/${waveCap(k, lvl)}` : 'locked',
-    })
+  const info = (prep ? `Release unlocks in ${Math.ceil(SEND.prepS - secs(g))}s` : `<b>${ready}</b> ready to release`) + (up ? ` · upkeep <span class="warn">−${up}</span>/${INCOME_EVERY_S}s` : '')
+  const tiles = L.slots.map((f, i) => {
+    if (!f) return btn('slot', '+ Build', { arg: String(i), cls: 'tile empty', sub: 'factory' })
+    const k = f.kind, r = ROBOTS[k], icon = svgIcon(ROBOT_ICON[k], robotColor(k), 18)
+    if (f.build) return btn('noop', `${short(k)}`, { cls: 'tile', off: true, icon, sub: `building ${secsOf(f.build)}` })
+    const left = f.queue.find(x => x > 0), total = Math.floor(r.buildS * TICK_HZ * FACTORY.buildPctByLevel[f.level - 1] / 100)
+    const bar = left ? `<i class="prog" style="width:${Math.round(100 * (total - left) / total)}%"></i>` : ''
+    return btn('load', `${short(k)}${bar}`, { arg: String(i), cls: 'tile', off: !!canLoad(g, L, i), icon, key: 'QWER'[i], sub: `${r.sendCost}g ${f.queue.length}/${waveCap(k, f.level)}` })
   }).join('')
-  return `<div class="info">${info}</div><div class="grid four">${tiles}</div><div class="row" style="margin-top:5px">${btn('release', `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L), key: 'Space' })}</div>`
+  const manage = L.slots.map((f, i) => f ? btn('slot', `L${f.level} ⚙`, { arg: String(i), cls: 'mini' }) : '<span></span>').join('')
+  return `<div class="info">${info}</div><div class="grid four">${tiles}</div><div class="grid four manage">${manage}</div>` +
+    `<div class="row" style="margin-top:5px">${btn('release', `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L), key: 'Space' })}</div>`
 }
 
-function factoryHtml(L: Lane): string {
-  const k = selFactory, lvl = L.factories[k], r = ROBOTS[k]
-  const tiles = ROBOT_KINDS.map(x => btn('pickFactory', short(x), {
-    arg: x, cls: x === k ? 'tile sel' : 'tile', icon: svgIcon(ROBOT_ICON[x], robotColor(x), 18),
-    sub: L.factories[x] ? `Level ${L.factories[x]}` : `${ROBOTS[x].factoryCost}g`,
-  })).join('')
-  const why = canFactory(L, k)
-  const main = lvl >= 3 ? btn('noop', 'Max level', { cls: 'alt', off: true })
-    : btn('factory', `${lvl ? 'Upgrade' : 'Build'} ${factoryCost(L, k)}`, { sub: lvl ? '+25% HP, bigger waves' : why === 'No free slot' ? 'no free slot' : 'unlocks this robot', off: !!why })
-  const demo = k !== 'scout' && lvl ? btn('demolish', 'Demolish', { cls: 'danger', sub: 'frees the slot, no refund' }) : ''
-  return `<div class="info"><b>${r.name}</b>: ${ROBOT_ROLE[k]} · ${Math.round(r.hp * SEND.hpPct / 100)} HP · slots ${slotsUsed(L)}/${FACTORY.slots}</div><div class="grid four">${tiles}</div><div class="row" style="margin-top:5px">${main}${demo}</div>`
+function pickHtml(L: Lane, slot: number): string {
+  const tiles = ROBOT_KINDS.filter(k => !L.slots.some(f => f?.kind === k)).map(k => {
+    const cost = ROBOTS[k].factoryCost
+    return btn('factory', short(k), { arg: k, cls: 'tile', off: L.gold < cost, icon: svgIcon(ROBOT_ICON[k], robotColor(k), 18), sub: `${cost}g ${secsOf(factoryTicks(cost))}` })
+  }).join('')
+  return `<div class="info">Slot ${slot + 1}: pick a factory · cost and build time</div><div class="grid four">${tiles}</div>` +
+    `<div class="row" style="margin-top:5px">${btn('slotBack', 'Back', { cls: 'alt', key: 'Esc' })}</div>`
+}
+
+function manageHtml(L: Lane, slot: number): string {
+  const f = L.slots[slot]
+  if (!f) { slotView = null; return '' }
+  const r = ROBOTS[f.kind], why = canFactory(L, slot)
+  const info = `<b>${r.name} factory</b> L${f.level}${f.build ? ` · building ${secsOf(f.build)}` : ''} · upkeep ${Math.floor(f.invested * FACTORY.upkeepPct / 100)}/${INCOME_EVERY_S}s · ${ROBOT_ROLE[f.kind]}`
+  const cost = factoryCost(L, slot)
+  const upBtn = f.level >= 3 ? btn('noop', 'Max level', { cls: 'alt', off: true })
+    : btn('factory', `Upgrade ${cost}`, { sub: `+${FACTORY.hpPctPerLevel}% HP, faster, bigger waves · ${secsOf(factoryTicks(cost * FACTORY.upgradeTimePct / 100))}`, off: !!why })
+  const refund = f.queue.length * r.sendCost + Math.floor(f.invested * FACTORY.refundPct / 100)
+  return `<div class="info">${info}</div><div class="row">${upBtn}${btn('demolish', `Demolish +${refund}`, { cls: 'danger', sub: 'frees the slot, refunds half' })}</div>` +
+    `<div class="row" style="margin-top:5px">${btn('slotBack', 'Back', { cls: 'alt', key: 'Esc' })}</div>`
 }
 
 function opponentHtml(g: Game, L: Lane): string {
-  const facts = ROBOT_KINDS.filter(k => L.factories[k]).map(k => `${ROBOTS[k].name} L${L.factories[k]}`).join(', ')
+  const facts = L.slots.filter(f => !!f).map(f => `${ROBOTS[f.kind].name} L${f.level}${f.build ? ' (building)' : ''}`).join(', ')
   const towers = L.towers.filter(Boolean).length
   return `<div class="info"><b class="warn">${rival().toUpperCase()} LANE</b> · ${L.lives} HP · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
-    radarHtml(L, 'Their defense') + `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${L.queue.length} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
+    radarHtml(L, 'Their defense') + `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${queuedCount(L)} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
     `<div class="row">${btn('back', 'Back to my lane', { cls: 'alt' })}</div>`
 }
 body.addEventListener('pointerdown', e => { if ((e.target as HTMLElement).closest('[data-act="back"]')) { view = ME; renderPanel(true) } })
@@ -533,14 +550,14 @@ addEventListener('keydown', e => {
   const L = g.lanes[ME], k = e.key.toLowerCase()
   const t = sel && L.towers[sel.y * COLS + sel.x]
   // a direct shortcut also jumps to its tab, so you see what it did
-  const tabFor = k >= '1' && k <= '6' || ((k === 'u' || k === 'a' || k === 'b' || k === 's') && t) ? 'build' : 'qwertyui '.includes(k) && k.length === 1 ? 'send' : k === 'f' ? 'factories' : null
-  if (tabFor && tabFor !== tab) { tab = tabFor; view = ME; renderPanel(true) }
+  const tabFor = k >= '1' && k <= '6' || ((k === 'u' || k === 'a' || k === 'b' || k === 's') && t) ? 'build' : 'qwer '.includes(k) && k.length === 1 ? 'send' : null
+  if (tabFor && (tabFor !== tab || slotView)) { tab = tabFor; slotView = null; view = ME; renderPanel(true) }
   if (k === 'h' || k === '?') toggleHelp()
   else if (k >= '1' && k <= '6') pickTower(TOWER_KINDS[+k - 1], false)
   else if (k === 'u' && t) act('upgrade')
   else if ((k === 'a' || k === 'b') && t && t.level === 2) act('upgrade', TOWERS[t.kind].branches[k === 'a' ? 0 : 1].key)
   else if (k === 's' && t) act('sell')
-  else if ('qwertyui'.includes(k) && k.length === 1) act('load', ROBOT_KINDS['qwertyui'.indexOf(k)])
+  else if ('qwer'.includes(k) && k.length === 1) act('load', String('qwer'.indexOf(k)))
   else if (k === ' ') { e.preventDefault(); act('release') }
   else if (k === 'escape') {
     // one layer per press: help, then a row being dragged, then a selected tower, then build mode
@@ -548,6 +565,7 @@ addEventListener('keydown', e => {
     else if (!$('helpScreen').hidden) toggleHelp()
     else if (drag) cancelDrag()
     else if (sel) { sel = null; renderPanel(true) }
+    else if (slotView) { slotView = null; renderPanel(true) }
     else stopBuilding()
   }
   else if (k === 'p') togglePause()
@@ -597,7 +615,8 @@ function hud(g: Game) {
   const L = g.lanes[ME], O = g.lanes[OPP], t = secs(g)
   $('lives').textContent = String(L.lives)
   $('gold').textContent = String(L.gold)
-  $('income').textContent = `+${L.income}`
+  const up = upkeep(L)
+  $('income').textContent = `+${L.income - up}`
   const nextPay = Math.ceil(INCOME_EVERY_S - (t % INCOME_EVERY_S))
   $('incomeSub').textContent = L.sealed ? 'frozen!' : `in ${nextPay}s`
   $('incomeSub').dataset.s = L.sealed ? 'frozen' : `${nextPay}s`
@@ -641,11 +660,11 @@ const TOUR: { text: string; spot?: string; done?: (L: Lane) => boolean; enter?: 
   { text: 'Now drag across 3 cells to build a short wall.', spot: '#lane', done: L => towerCount(L) >= 4 },
   { text: 'Towers are walls: robots take the shortest path. Make it long, but never close it.', spot: '#lane' },
   { text: 'Time to attack. Open SEND.', spot: '[data-tab=send]', done: () => tab === 'send' },
-  { text: 'Load 3 Scouts (10 gold each, income refills your gold).', spot: '#body', done: L => L.queue.length >= 3 || L.released > 0 },
+  { text: 'Load 3 Scouts (10 gold each, income refills your gold).', spot: '#body', done: L => queuedCount(L) >= 3 || L.released > 0 },
   { text: 'Release them into your rival\'s lane (unlocks when the prep timer ends).', spot: '#body', done: L => L.released > 0 },
   { text: 'Every robot you send raises your income for the rest of the match.', spot: '#meRow' },
-  { text: 'Open FACTORIES.', spot: '[data-tab=factories]', done: () => tab === 'factories' },
-  { text: 'Factories unlock stronger robots. Only 4 slots, so pick a plan.', spot: '#body' },
+  { text: 'You have 4 factory slots. Tap an empty one to build a factory for stronger robots; each factory fills its own queue.', spot: '#body', enter: () => { tab = 'send'; slotView = null; renderPanel(true) } },
+  { text: 'A factory takes time to build and costs upkeep. Build one when your Scouts can\'t spend your gold fast enough.', spot: '#body' },
   { text: 'Counter armor: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.', spot: '#body', enter: () => { tab = 'build'; renderPanel(true) } },
   { text: 'That\'s it! The Easy bot wakes up now. Press ? for help any time.' },
 ]
