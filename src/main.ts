@@ -5,13 +5,14 @@ import {
   type RobotKind, type TowerKind,
 } from './sim/config.ts'
 import {
-  buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, factoryTicks, newGame, queuedCount, readyCount, secs, sellValue,
+  buildCost, buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, factoryTicks, maxLevel, newGame, queuedCount, readyCount, secs, sellValue,
   step, towerStats, upgradeCost, upkeep, waveCap, wouldSeal, type Cmd, type Game, type Lane, type Tower,
 } from './sim/sim.ts'
 import { DIFFICULTY, RIVALS, botThink, newMem, radar, type BotMem, type Strategy, type Threat } from './sim/bot.ts'
 import { C, ROBOT_ICON, TOWER_ICON, hex, robotColor, svgIcon, towerColor } from './ui.ts'
 
 const TOWER_ROLE: Record<TowerKind, string> = {
+  wall: 'Cheap maze block, no gun · build a tower on it later and its 5 g count toward it',
   gatling: 'Cheap single target · Kinetic · ground + air',
   flak: 'Anti-air splash · Explosive · air only',
   emp: 'Slows robots in range by 40% · Energy',
@@ -339,14 +340,14 @@ laneEl.addEventListener('pointerdown', e => {
   if (!c) return
   const L = g.lanes[ME], i = c.y * COLS + c.x
   hover = c
-  if (L.towers[i]) { // an existing tower: select it for upgrade / sell
+  if (L.towers[i] && !(buildKind && buildKind !== 'wall' && L.towers[i]!.kind === 'wall')) { // an existing tower: select it for upgrade / sell (a gun picked builds on Walls)
     sel = sel && sel.x === c.x && sel.y === c.y ? null : c
     tab = 'build'
     sfx.click()
     return renderPanel(true)
   }
   sel = null
-  if (!buildKind) { toast('Pick a tower first (1–6)'); sfx.deny(); tab = 'build'; return renderPanel(true) }
+  if (!buildKind) { toast('Pick a tower first (1–7)'); sfx.deny(); tab = 'build'; return renderPanel(true) }
   if (!buildable(c.x, c.y)) { toast('Spawn and exit rows are not buildable'); sfx.deny(); return renderPanel(true) }
   drag = { cells: [i], last: i }
   laneEl.setPointerCapture(e.pointerId)
@@ -377,7 +378,7 @@ laneEl.addEventListener('pointerup', () => {
   if (!drag || !g || !buildKind) return
   const cells = drag.cells, kind = buildKind
   drag = null
-  const L = g.lanes[ME], cost = TOWERS[kind].cost
+  const L = g.lanes[ME]
   if (cells.length === 1) { // one click = one tower; sealing the lane needs a second click on the same cell
     const i = cells[0], x = i % COLS, y = Math.floor(i / COLS)
     const why = canBuild(L, x, y, kind)
@@ -390,16 +391,17 @@ laneEl.addEventListener('pointerup', () => {
   // a row: the picked tower along the drag, skipping any cell that would seal the lane
   const towers = L.towers.slice()
   let gold = L.gold, built = 0, skipped = 0
+  let short = false
   for (const i of cells) {
-    const x = i % COLS, y = Math.floor(i / COLS)
-    if (gold < cost) break
+    const x = i % COLS, y = Math.floor(i / COLS), cost = buildCost(L, x, y, kind)
+    if (gold < cost) { short = true; break }
     if (canBuild(L, x, y, kind) || wouldSeal(L, x, y, towers)) { skipped++; continue }
     towers[i] = { kind } as Tower
     gold -= cost
     pending.push({ p: ME, t: 'build', x, y, kind })
     built++
   }
-  toast(`Row: ${built} ${TOWERS[kind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${gold < cost && built < cells.length - skipped ? ', out of gold' : ''}`)
+  toast(`Row: ${built} ${TOWERS[kind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${short ? ', out of gold' : ''}`)
 })
 
 function cancelDrag() {
@@ -434,6 +436,7 @@ function act(a: string, arg?: string) {
   const L = g.lanes[ME]
   switch (a) {
     case 'upgrade': if (sel) { const ok = !canUpgrade(L, sel.x, sel.y, arg); if (ok) { pending.push({ p: ME, t: 'upgrade', x: sel.x, y: sel.y, branch: arg }); sfx.upgrade() } else sfx.deny() } break
+    case 'convert': if (sel) { if (canBuild(L, sel.x, sel.y, arg as TowerKind)) sfx.deny(); else { pending.push({ p: ME, t: 'build', x: sel.x, y: sel.y, kind: arg as TowerKind }); sfx.upgrade() } } break
     case 'sell': if (sel) { pending.push({ p: ME, t: 'sell', x: sel.x, y: sel.y }); sel = null; sfx.sell() } break
     case 'load': if (canLoad(g, L, +arg!)) sfx.deny(); else { pending.push({ p: ME, t: 'load', slot: +arg! }); sfx.click() } break
     case 'release': if (canRelease(g, L)) sfx.deny(); else { pending.push({ p: ME, t: 'release' }); sfx.release() } break
@@ -473,18 +476,21 @@ function buildHtml(g: Game, L: Lane): string {
     const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost double.</span>'
       : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · click for one, drag for a row`
       : 'Pick a tower to build · click a placed tower to upgrade or sell'
-    return `<div class="info">${msg}</div><div class="grid six">` +
+    return `<div class="info">${msg}</div><div class="grid seven">` +
       TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost">${TOWERS[x].cost}g</span><kbd>${i + 1}</kbd></button>`).join('') +
       '</div>' + (k ? `<div class="row" style="margin-top:6px">${btn('stop', 'Stop building', { cls: 'alt', key: 'Esc' })}</div>` : radarHtml(L, 'Your defense'))
   }
   const st = towerStats(t), d = TOWERS[t.kind]
   const branch = t.branch ? d.branches.find(b => b.key === t.branch)!.name : ''
-  const info = `<b style="color:${hex(towerColor(t.kind))}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${Math.round(t.maxHp / 1000)} · ${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`
+  const info = `<b style="color:${hex(towerColor(t.kind))}">${d.name}</b> L${t.level}${branch ? ` · ${branch}` : ''} · HP ${Math.ceil(t.hp / 1000)}/${Math.round(t.maxHp / 1000)} · ${t.kind === 'wall' ? 'no gun' : `${Math.round(st.dps / 1000)} dps · range ${(st.rangeMc / 1000).toFixed(1)}`}`
   let up: string
-  if (t.level === 1) up = btn('upgrade', `Upgrade ${upgradeCost(t)}`, { key: 'U', sub: '+60% dmg, +10% range', off: !!canUpgrade(L, t.x, t.y) })
+  if (t.kind === 'wall') up = TOWER_KINDS.filter(k => k !== 'wall').map(k => btn('convert', `${TOWERS[k].name} ${buildCost(L, t.x, t.y, k)}`, { arg: k, off: !!canBuild(L, t.x, t.y, k) })).join('')
+  else if (t.level === 1) up = btn('upgrade', `Upgrade ${upgradeCost(t)}`, { key: 'U', sub: '+60% dmg, +10% range', off: !!canUpgrade(L, t.x, t.y) })
   else if (t.level === 2) up = d.branches.map((b, i) => btn('upgrade', `${b.name} ${upgradeCost(t)}`, { arg: b.key, key: 'AB'[i], sub: b.desc, off: !!canUpgrade(L, t.x, t.y, b.key) })).join('')
+  else if (t.level < maxLevel(t.kind)) up = btn('upgrade', `Overclock ${upgradeCost(t)}`, { key: 'U', sub: 'x2 dmg, +20% range', off: !!canUpgrade(L, t.x, t.y) })
   else up = btn('noop', 'Max level', { cls: 'alt', off: true })
-  return `<div class="info">${info}</div><div class="info">${TOWER_ROLE[t.kind]}</div><div class="row">${up}${btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt', key: 'S' })}</div>`
+  const sell = btn('sell', `Sell +${sellValue(t)}`, { cls: 'alt', key: 'S' })
+  return `<div class="info">${info}</div><div class="info">${TOWER_ROLE[t.kind]}</div>` + (t.kind === 'wall' ? `<div class="grid">${up}</div><div class="row" style="margin-top:6px">${sell}</div>` : `<div class="row">${up}${sell}</div>`)
 }
 
 // threat radar: how much damage this lane does to each armor type, so a hole shows before it's punished
@@ -554,10 +560,10 @@ addEventListener('keydown', e => {
   const L = g.lanes[ME], k = e.key.toLowerCase()
   const t = sel && L.towers[sel.y * COLS + sel.x]
   // a direct shortcut also jumps to its tab, so you see what it did
-  const tabFor = k >= '1' && k <= '6' || ((k === 'u' || k === 'a' || k === 'b' || k === 's') && t) ? 'build' : 'qwer '.includes(k) && k.length === 1 ? 'send' : null
+  const tabFor = k >= '1' && k <= '7' || ((k === 'u' || k === 'a' || k === 'b' || k === 's') && t) ? 'build' : 'qwer '.includes(k) && k.length === 1 ? 'send' : null
   if (tabFor && (tabFor !== tab || slotView)) { tab = tabFor; slotView = null; view = ME; renderPanel(true) }
   if (k === 'h' || k === '?') toggleHelp()
-  else if (k >= '1' && k <= '6') pickTower(TOWER_KINDS[+k - 1], false)
+  else if (k >= '1' && k <= '7') pickTower(TOWER_KINDS[+k - 1], false)
   else if (k === 'u' && t) act('upgrade')
   else if ((k === 'a' || k === 'b') && t && t.level === 2) act('upgrade', TOWERS[t.kind].branches[k === 'a' ? 0 : 1].key)
   else if (k === 's' && t) act('sell')
@@ -661,8 +667,10 @@ const TOUR: { text: string; spot?: string; done?: (L: Lane) => boolean; enter?: 
   { text: 'Your lane. Robots enter at the top and walk to your core at the bottom.', spot: '#lane' },
   { text: 'Pick the Gatling tower.', spot: '#body', done: () => buildKind === 'gatling' },
   { text: 'Tap a cell to build it.', spot: '#lane', done: L => towerCount(L) >= 1 },
-  { text: 'Now drag across 3 cells to build a short wall.', spot: '#lane', done: L => towerCount(L) >= 4 },
-  { text: 'Towers are walls: robots take the shortest path. Make it long, but never close it.', spot: '#lane' },
+  { text: 'Walls cost only 5 gold. Pick the Wall.', spot: '#body', done: () => buildKind === 'wall' },
+  { text: 'Drag across 4 cells to build a Wall row.', spot: '#lane', done: L => towerCount(L) >= 5 },
+  { text: 'Robots take the shortest path. A long maze keeps them in your guns\' range: make it long, but never close it.', spot: '#lane' },
+  { text: 'Later, pick a gun and tap a Wall to build it there. The Wall\'s 5 gold count toward it.', spot: '#body' },
   { text: 'Time to attack. Open SEND.', spot: '[data-tab=send]', done: () => tab === 'send' },
   { text: 'Load 3 Scouts (10 gold each, income refills your gold).', spot: '#body', done: L => queuedCount(L) >= 3 || L.released > 0 },
   { text: 'Release them into your rival\'s lane (unlocks when the prep timer ends).', spot: '#body', done: L => L.released > 0 },

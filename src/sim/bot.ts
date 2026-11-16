@@ -1,8 +1,8 @@
 // Bot player: reads the game state and returns ordinary commands, exactly like a human's input.
 // Deterministic (no randomness), so headless bot-vs-bot runs are reproducible.
-import { ARMOR_MULT_PCT, COLS, ROBOTS, ROWS, SEND, TICK_HZ, TOWERS, type Armor, type RobotKind, type TowerKind } from './config.ts'
+import { ARMOR_MULT_PCT, COLS, MAX_LEVEL, ROBOTS, ROWS, SEND, TICK_HZ, TOWERS, type Armor, type RobotKind, type TowerKind } from './config.ts'
 import {
-  INF, buildable, canBuild, canFactory, canLoad, canRelease, canUpgrade, factoryCost, factoryLevel, factoryOf, opponent, pathFrom, pathLen,
+  INF, SPAWN, buildable, canBuild, maxLevel, canFactory, canLoad, canRelease, canUpgrade, factoryCost, factoryLevel, factoryOf, opponent, pathFrom, pathLen,
   readyCount, secs, sellValue, towerStats, upgradeCost, type Cmd, type Game, type Lane, type Tower,
 } from './sim.ts'
 
@@ -14,31 +14,38 @@ export interface Strategy {
   burst: number // release when this many robots are ready (1 = trickle)
   counter: boolean // pick towers by incoming armor and sends by the opponent's weak spot
   sends?: RobotKind[] // only send these (default: anything unlocked)
-  mazeTowers: number // cheap Gatling walls to build before adding damage towers
+  maze: Maze // how it shapes its lane with Walls (mazing pass 2026-11-16)
+  wallPct?: number // at most this share of tower gold goes into Walls (default 30)
   saveAt?: number // from this second on, stop sending to save up for the next planned factory (default 120, the sweet spot in run.ts sweeps)
   upgradeAt?: number // seconds before factory upgrades start (default 240)
 }
 
+// open: no Walls, guns where they cover the most path (what mazing has to beat).
+// greedy: adapts to the lane: the next Wall row (any height, gap anywhere) that adds the most path per Wall.
+// serpent: full-width Wall rows with alternating gaps, guns built on the rows so they cover two corridors.
+// killbox: a few anchor guns in mid-lane pushed to L4, Wall rows where the path stays longest in their range.
+export type Maze = 'open' | 'greedy' | 'serpent' | 'killbox'
+
 export const DIFFICULTY: Record<'easy' | 'normal' | 'hard', Strategy> = {
-  easy: { name: 'Easy', delay: 60, defense: 80, factories: ['tank'], burst: 1, counter: false, mazeTowers: 6, saveAt: INF },
-  normal: { name: 'Normal', delay: 30, defense: 45, factories: ['tank', 'drone', 'shield'], burst: 4, counter: true, mazeTowers: 10 },
-  hard: { name: 'Hard', delay: 10, defense: -1, factories: ['tank', 'drone', 'splitter'], burst: 8, counter: true, mazeTowers: 12 },
+  easy: { name: 'Easy', delay: 60, defense: 80, factories: ['tank'], burst: 1, counter: false, maze: 'open', saveAt: INF },
+  normal: { name: 'Normal', delay: 30, defense: 45, factories: ['tank', 'drone', 'shield'], burst: 4, counter: true, maze: 'serpent' },
+  hard: { name: 'Hard', delay: 10, defense: -1, factories: ['tank', 'drone', 'splitter'], burst: 8, counter: true, maze: 'greedy' },
 }
 
 // Bot ladder: named rivals, each one a strategy with a clear counter, ordered from easy to hard.
 export const RIVALS: { name: string; blurb: string; st: Strategy }[] = [
   { name: 'Sprocket', blurb: 'Trickles Tanks one by one. Learn to maze.', st: DIFFICULTY.easy },
-  { name: 'Ironside', blurb: 'Turtles behind a thick wall. Out-send it.', st: { name: 'Ironside', delay: 40, defense: 85, factories: ['tank', 'shield'], burst: 3, counter: true, mazeTowers: 12 } },
-  { name: 'Bolt', blurb: 'Floods you with Scouts. Kinetic beats Light.', st: { name: 'Bolt', delay: 35, defense: 55, factories: [], sends: ['scout'], burst: 12, counter: true, mazeTowers: 10 } },
-  { name: 'Skyhook', blurb: 'Drones fly over your maze. Build Flak.', st: { name: 'Skyhook', delay: 30, defense: 55, factories: ['drone'], sends: ['drone', 'scout'], burst: 6, counter: true, mazeTowers: 10 } },
-  { name: 'Hive', blurb: 'Splitters with Shield and Repair escorts. EMP jams them.', st: { name: 'Hive', delay: 25, defense: 55, factories: ['splitter', 'shield', 'repair'], sends: ['splitter', 'shield', 'repair', 'scout'], burst: 8, counter: true, mazeTowers: 10 } },
-  { name: 'Crusher', blurb: 'Tanks, Breakers, then a Colossus. Explosive beats Heavy.', st: { name: 'Crusher', delay: 20, defense: 55, factories: ['tank', 'breaker', 'colossus'], sends: ['tank', 'breaker', 'colossus'], burst: 5, counter: true, mazeTowers: 10 } },
-  { name: 'Blitz', blurb: 'All-in sender with a thin maze. Punish it, then race it.', st: { name: 'Blitz', delay: 15, defense: 35, factories: ['tank'], burst: 6, counter: true, mazeTowers: 6 } },
+  { name: 'Ironside', blurb: 'Turtles behind a thick wall. Out-send it.', st: { name: 'Ironside', delay: 40, defense: 85, factories: ['tank', 'shield'], burst: 3, counter: true, maze: 'serpent', wallPct: 40 } },
+  { name: 'Bolt', blurb: 'Floods you with Scouts. Kinetic beats Light.', st: { name: 'Bolt', delay: 35, defense: 55, factories: [], sends: ['scout'], burst: 12, counter: true, maze: 'serpent' } },
+  { name: 'Skyhook', blurb: 'Drones fly over your maze. Build Flak.', st: { name: 'Skyhook', delay: 30, defense: 55, factories: ['drone'], sends: ['drone', 'scout'], burst: 6, counter: true, maze: 'killbox' } },
+  { name: 'Hive', blurb: 'Splitters with Shield and Repair escorts. EMP jams them.', st: { name: 'Hive', delay: 25, defense: 55, factories: ['splitter', 'shield', 'repair'], sends: ['splitter', 'shield', 'repair', 'scout'], burst: 8, counter: true, maze: 'greedy' } },
+  { name: 'Crusher', blurb: 'Tanks, Breakers, then a Colossus. Explosive beats Heavy.', st: { name: 'Crusher', delay: 20, defense: 55, factories: ['tank', 'breaker', 'colossus'], sends: ['tank', 'breaker', 'colossus', 'scout'], burst: 5, counter: true, maze: 'killbox' } },
+  { name: 'Blitz', blurb: 'All-in sender with a thin maze. Punish it, then race it.', st: { name: 'Blitz', delay: 15, defense: 35, factories: ['tank'], burst: 6, counter: true, maze: 'greedy', wallPct: 15 } },
   { name: 'Overmind', blurb: 'Reads your defense and hits the weakest spot.', st: { ...DIFFICULTY.hard, name: 'Overmind' } },
 ]
 
-export interface BotMem { seen: Map<number, RobotKind>; armor: Record<Armor, number>; air: number; leaksAt: number[]; leaks: { at: number; kind: RobotKind }[]; lastRelease: number }
-export const newMem = (): BotMem => ({ seen: new Map(), armor: { light: 0, heavy: 0, shielded: 0 }, air: 0, leaksAt: [], leaks: [], lastRelease: 0 })
+export interface BotMem { seen: Map<number, RobotKind>; armor: Record<Armor, number>; air: number; leaksAt: number[]; leaks: { at: number; kind: RobotKind }[]; lastRelease: number; plan: number[] }
+export const newMem = (): BotMem => ({ seen: new Map(), armor: { light: 0, heavy: 0, shielded: 0 }, air: 0, leaksAt: [], leaks: [], lastRelease: 0, plan: [] })
 
 export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
   const L = g.lanes[p], O = g.lanes[opponent(g, p)]
@@ -58,7 +65,10 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
   const recentLeaks = mem.leaksAt.filter(x => x > g.tick - 30 * TICK_HZ).length
   const share = st.defense >= 0 ? st.defense : Math.min(85, 25 + recentLeaks * 8 + (L.sealed ? 30 : 0)) // fun plan: sending pays, so Hard leans on offense
   const spent = L.stats.towerGold + L.stats.sendGold
-  const wantDefense = L.stats.towerGold * 100 <= share * spent || recentLeaks > 2 || t < SEND.prepS
+  // saving up for the next planned factory: towers only when leaking (else the defense share eats the savings)
+  const plan = st.factories.find(k => !factoryOf(L, k) && (k !== 'colossus' || t >= 300 - FACTORY_LEAD_S))
+  const saving = !!plan && L.slots.includes(null) && t > 50 && t >= (st.saveAt ?? 120) * (L.slots.filter(f => f && f.kind !== 'scout').length + 1) && L.gold < ROBOTS[plan].factoryCost
+  const wantDefense = (L.stats.towerGold * 100 <= share * spent && !saving) || recentLeaks > 2 || t < SEND.prepS
 
   // release whatever is ready once the burst size is reached (or the wave is full)
   const ready = readyCount(L)
@@ -70,7 +80,7 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
 
   const c = wantDefense ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null
   const s = c ? [] : send(g, L, O, st)
-  const d = c ?? (!s.length && L.gold > 300 ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null) // nothing to send: don't sit on gold
+  const d = c ?? (!s.length && !saving && L.gold > 300 ? defend(L, O, st, mem, t, g.tick, g.sendHpBp / 10000) : null) // nothing to send: don't sit on gold
   for (const x of d ? [d].flat() : []) cmds.push({ p, ...x } as Cmd)
   cmds.push(...s.map(x => ({ p, ...x }) as Cmd))
   return cmds
@@ -111,7 +121,9 @@ function coverageByThreat(towers: Tower[], ground: Set<number>): Record<Threat, 
 }
 
 function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: number, hpScale: number): C | C[] | null {
+  if (L.gold < TOWERS.wall.cost) return null
   const towers = L.towers.filter((x): x is Tower => !!x)
+  const guns = towers.filter(x => x.kind !== 'wall'), walls = towers.length - guns.length
   const cur = pathLen(L.towers)
   const pathSet = new Set(pathFrom(L.openDist, L.towers))
 
@@ -126,64 +138,140 @@ function defend(L: Lane, O: Lane, st: Strategy, mem: BotMem, t: number, tick: nu
   const ratio = (x: Threat) => th[x] < 100 ? INF : cov[x] / TYPICAL[x].speed / (TYPICAL[x].hp * 1000 * scale * 4)
   const need = (['light', 'heavy', 'shielded', 'air'] as Threat[]).sort((a, b) => (ratio(a) - leaked[a] * 1e6) - (ratio(b) - leaked[b] * 1e6))[0]
 
-  let kind: TowerKind = 'gatling'
-  const walls = towers.filter(x => x.kind === 'gatling').length
-  if (walls >= st.mazeTowers) {
-    if (st.counter) {
-      kind = COUNTER[need]
-      if (need === 'light' && t > 300 && towers.filter(x => x.kind === 'laser').length < 2) kind = 'laser'
-      if (need === 'shielded' && towers.filter(x => x.kind === 'tesla').length > 3) kind = 'laser'
-      if (towers.length > 18 && !towers.some(x => x.kind === 'emp')) kind = 'emp'
-      // aura swarm coming: EMP jams Repair/Shield bots and strips shields
-      const auras = factoryLevel(O, 'repair') + factoryLevel(O, 'shield')
-      if (auras && towers.filter(x => x.kind === 'emp').length < 1 + (auras >> 1)) kind = 'emp'
-    } else {
-      kind = (['gatling', 'mortar', 'tesla'] as TowerKind[])[towers.length % 3]
-    }
-  }
+  // maze first: Walls as soon as two guns stand, up to 150 g or the Wall share (air leaks: guns, Walls don't stop Drones)
+  const wallGold = walls * TOWERS.wall.cost
+  const c = st.maze !== 'open' && guns.length >= 2 && need !== 'air' && (wallGold < 150 || wallGold * 100 <= (st.wallPct ?? 30) * L.stats.towerGold) ? nextWall(L, st.maze, guns, mem) : -1
+  if (c >= 0) return { t: 'build', x: c % COLS, y: (c / COLS) | 0, kind: 'wall' }
 
-  // upgrade the best-placed tower that fights what's coming, once the maze has some length
+  let kind: TowerKind
+  if (st.counter) {
+    kind = COUNTER[need]
+    if (need === 'light' && t > 300 && guns.filter(x => x.kind === 'laser').length < 2) kind = 'laser'
+    if (need === 'shielded' && guns.filter(x => x.kind === 'tesla').length > 3) kind = 'laser'
+    if (guns.length > 12 && !guns.some(x => x.kind === 'emp')) kind = 'emp'
+    // aura swarm coming: EMP jams Repair/Shield bots and strips shields
+    const auras = factoryLevel(O, 'repair') + factoryLevel(O, 'shield')
+    if (auras && guns.filter(x => x.kind === 'emp').length < 1 + (auras >> 1)) kind = 'emp'
+  } else {
+    kind = (['gatling', 'mortar', 'tesla'] as TowerKind[])[guns.length % 3]
+  }
+  if (guns.length < 2) kind = need === 'air' ? 'flak' : 'gatling' // cheap start, the first neutral waves are Scouts
+
+  // upgrade the best-placed gun that fights what's coming; a killbox pours everything into its anchors
   const fits = (x: Tower) => {
     const d = TOWERS[x.kind]
     if (need === 'air') return d.air ? 100 : 0
     return d.ground ? ARMOR_MULT_PCT[d.dmg][need] : 0
   }
-  if (towers.length >= st.mazeTowers + 4) {
-    const best = towers
-      .filter(x => x.level < 3 && (x.kind !== 'gatling' || towers.length > 20))
-      .map(x => ({ x, score: coverage(x.x, x.y, towerStats(x).rangeMc, need === 'air' ? AIR_PATH : pathSet) * fits(x) }))
+  const upFrom = st.maze === 'killbox' ? ANCHORS.length : 5
+  if (guns.length >= upFrom) {
+    const best = guns
+      .filter(x => x.level < maxLevel(x.kind))
+      .map(x => ({ x, score: coverage(x.x, x.y, towerStats(x).rangeMc, need === 'air' ? AIR_PATH : pathSet) * fits(x) * (st.maze === 'killbox' && isAnchor(x) ? 3 : 50 / upgradeCost(x)) })) // per gold, except a killbox's anchors
       .sort((a, b) => b.score - a.score || a.x.id - b.x.id)[0]
     if (best && best.score > 300) {
       const branch = pickBranch(best.x.kind, need)
       if (!canUpgrade(L, best.x.x, best.x.y, branch)) return { t: 'upgrade', x: best.x.x, y: best.x.y, branch }
-      if (L.gold < upgradeCost(best.x) && towers.length >= st.mazeTowers + 8) return null // save up for it
+      if (L.gold < upgradeCost(best.x) && guns.length >= upFrom + 4) return null // save up for it
     }
   }
 
-  // place: prefer cells that lengthen the path, then cells that cover lots of path
+  // place a gun: a killbox fills its anchor cells first, a serpent only builds on its Wall rows
   const range = TOWERS[kind].rangeMc
   const route = kind === 'flak' ? AIR_PATH : pathSet
+  const anchor = st.maze === 'killbox' && need !== 'air' ? ANCHORS.find(([x, y]) => !canBuild(L, x, y, kind) && (L.towers[y * COLS + x] || !seals(L, y * COLS + x))) : undefined // empty or a Wall
+  if (anchor) return { t: 'build', x: anchor[0], y: anchor[1], kind }
   let bestCell = -1, bestScore = -INF
   for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
     if (!buildable(x, y) || canBuild(L, x, y, kind)) continue
     const i = y * COLS + x
-    L.towers[i] = { id: 0 } as Tower
-    const len = pathLen(L.towers)
-    L.towers[i] = null
-    if (len >= INF) continue // never seal
-    const gain = len - cur
-    const score = kind === 'gatling' ? gain * 100 + coverage(x, y, range, pathSet) - (pathSet.has(i) ? 0 : 5) : coverage(x, y, range, route) * 10 + gain * 20
+    const onWall = !!L.towers[i]
+    if (st.maze === 'serpent' && !onWall && !SERPENT_SET.has(i)) continue
+    let gain = 0
+    if (!onWall) {
+      L.towers[i] = { id: 0 } as Tower
+      const len = pathLen(L.towers)
+      L.towers[i] = null
+      if (len >= INF) continue // never seal
+      gain = len - cur
+    }
+    const cover = coverage(x, y, range, route)
+    const score = st.maze === 'open' ? cover * 10 : cover * 10 + gain * 20 + (onWall ? 5 : 0)
     if (score > bestScore) { bestScore = score; bestCell = i }
   }
-  // lane full: swap a level-1 tower that's weak against what's coming for one that counters it (same cell, maze unchanged)
-  if (bestCell < 0 && st.counter && kind !== 'gatling') {
-    const swap = towers
+  // lane full: swap a level-1 gun that's weak against what's coming for one that counters it (same cell, maze unchanged)
+  if (bestCell < 0 && st.counter) {
+    const swap = guns
       .filter(x => x.level === 1 && x.kind !== kind && fits(x) <= 50)
-      .sort((a, b) => coverage(b.x, b.y, TOWERS[kind].rangeMc, route) - coverage(a.x, a.y, TOWERS[kind].rangeMc, route) || a.id - b.id)[0]
+      .sort((a, b) => coverage(b.x, b.y, range, route) - coverage(a.x, a.y, range, route) || a.id - b.id)[0]
     if (swap && L.gold + sellValue(swap) >= TOWERS[kind].cost) return [{ t: 'sell', x: swap.x, y: swap.y }, { t: 'build', x: swap.x, y: swap.y, kind }]
   }
   if (bestCell < 0) return null
   return { t: 'build', x: bestCell % COLS, y: (bestCell / COLS) | 0, kind }
+}
+
+// --- mazing ----------------------------------------------------------------
+
+const ANCHORS = [[5, 7], [5, 12], [2, 10], [8, 10]]
+const isAnchor = (t: Tower) => ANCHORS.some(([x, y]) => t.x === x && t.y === y)
+// serpent rows: Walls across the lane every third row, the gap alternating sides, so the path runs ~5 full widths
+const SERPENT: number[] = [4, 7, 10, 13, 16].flatMap((y, k) => Array.from({ length: COLS - 1 }, (_, j) => y * COLS + (k % 2 ? COLS - 1 - j : j)))
+const SERPENT_SET = new Set(SERPENT)
+
+const seals = (L: Lane, i: number) => { L.towers[i] = { id: 0 } as Tower; const s = pathLen(L.towers) >= INF; L.towers[i] = null; return s }
+
+// Shortest 4-way route spawn → exit (null if sealed), the same metric as pathLen.
+function route(towers: (Tower | null)[]): number[] | null {
+  const from = new Int16Array(COLS * ROWS).fill(-1)
+  const q = [SPAWN]
+  from[SPAWN] = SPAWN
+  for (let h = 0; h < q.length; h++) {
+    const c = q[h], x = c % COLS, y = (c / COLS) | 0
+    if (y === ROWS - 1) { const out = [c]; for (let k = c; k !== SPAWN; k = from[k]) out.push(from[k]); return out }
+    for (const [dx, dy] of [[0, 1], [-1, 0], [1, 0], [0, -1]]) {
+      const nx = x + dx, ny = y + dy, n = ny * COLS + nx
+      if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS || from[n] >= 0 || towers[n]) continue
+      from[n] = c
+      q.push(n)
+    }
+  }
+  return null
+}
+
+// The next Wall for this maze style, -1 when the maze is done (or nothing helps).
+function nextWall(L: Lane, maze: Maze, guns: Tower[], mem: BotMem): number {
+  const free = (i: number) => buildable(i % COLS, (i / COLS) | 0) && !canBuild(L, i % COLS, (i / COLS) | 0, 'wall')
+  if (maze === 'serpent') {
+    for (const i of SERPENT) if (free(i) && !seals(L, i)) return i
+    return -1
+  }
+  // finish the segment we started, unless the lane changed under it
+  while (mem.plan.length) { const i = mem.plan.shift()!; if (free(i) && !seals(L, i)) return i }
+  // value of a route: its length, plus (killbox) the steps it spends inside our guns' range
+  const w = new Float64Array(COLS * ROWS).fill(1)
+  if (maze === 'killbox') for (const g of guns) {
+    const r = towerStats(g).rangeMc
+    for (let i = 0; i < w.length; i++) {
+      const dx = ((i % COLS) - g.x) * 1000, dy = (((i / COLS) | 0) - g.y) * 1000
+      if (dx * dx + dy * dy <= r * r) w[i] += isAnchor(g) ? 2 * g.level : 0.5
+    }
+  }
+  const value = (p: number[] | null) => { if (!p) return -INF; let v = 0; for (const i of p) v += w[i]; return v }
+  const base = route(L.towers)!, cur = value(base)
+  // one Wall rarely lengthens a path, a barrier does: try a Wall row across the lane at every height with the gap
+  // at every column, built around whatever already stands there; best gain per new Wall wins.
+  let best: number[] = [], bestV = 0
+  for (let y = 2; y < ROWS - 2; y++) for (let gap = 0; gap < COLS; gap++) {
+    const seg: number[] = []
+    for (let x = 0; x < COLS; x++) if (x !== gap && !L.towers[y * COLS + x]) seg.push(y * COLS + x)
+    if (!seg.length || L.towers[y * COLS + gap] || seg.some(i => !free(i))) continue
+    for (const i of seg) L.towers[i] = { id: 0 } as Tower
+    const v = (value(route(L.towers)) - cur) / seg.length
+    for (const i of seg) L.towers[i] = null
+    if (v > bestV + 0.01) { bestV = v; best = seg.sort((a, b) => Math.abs((b % COLS) - gap) - Math.abs((a % COLS) - gap)) } // far end first
+  }
+  mem.plan = best.slice(1)
+  return best.length ? best[0] : -1
 }
 
 const coverage = (x: number, y: number, rangeMc: number, path: Set<number>) => {
@@ -197,6 +285,7 @@ const coverage = (x: number, y: number, rangeMc: number, path: Set<number>) => {
 
 function pickBranch(kind: TowerKind, need: Threat): string {
   switch (kind) {
+    case 'wall': return ''
     case 'gatling': return need === 'light' || need === 'air' ? 'overdrive' : 'pierce'
     case 'flak': return 'shrapnel'
     case 'mortar': return need === 'heavy' ? 'burn' : 'cluster'

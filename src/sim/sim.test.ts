@@ -1,7 +1,7 @@
 // Run: npm test (node strips the types). Plain asserts, no framework.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { AURA, COLS, FACTORY, LIVES, MC, ROBOTS, SEND, START_INCOME, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
+import { AURA, COLS, FACTORY, TOWERS, LIVES, MC, ROBOTS, SEND, START_INCOME, TICK_HZ, type RobotKind, type TowerKind } from './config.ts'
 import { INF, damage, factoryTicks, newGame, queuedCount, readyCount, spawn, step, towerStats, upkeep, wouldSeal, type Cmd, type Game, type Lane } from './sim.ts'
 
 type C = Cmd extends infer T ? T extends Cmd ? Omit<T, 'p'> : never : never
@@ -101,10 +101,45 @@ const put = (g: Game, L: Lane, kind: RobotKind, x: number, y: number, hp = 100 *
   assert.equal(t.maxHp, 390 * MC)
   const st = towerStats(t)
   assert.equal(st.rangeMc, 3630)
-  assert.equal(st.dps, Math.floor(22.5 * 256 / 100 * 180 / 100 * MC))
+  assert.equal(st.dps, Math.floor(TOWERS.gatling.dps * 256 / 100 * 180 / 100 * MC))
+  step(g, at(0, [{ t: 'upgrade', x: 3, y: 5 }]))
+  assert.equal(t.level, 3, 'a Gatling stops at L3')
   const gold = L.gold
   step(g, at(0, [{ t: 'sell', x: 3, y: 5 }]))
   assert.equal(L.gold - gold, 75)
+}
+
+// 7a. L4 Overclock, big guns only: 3x base, keeps the branch, x2 damage
+{
+  const { g, L } = game()
+  L.gold = 10_000
+  step(g, at(0, [{ t: 'build', x: 3, y: 5, kind: 'laser' }, { t: 'upgrade', x: 3, y: 5 }]))
+  step(g, at(0, [{ t: 'upgrade', x: 3, y: 5, branch: 'melt' }]))
+  step(g, at(0, [{ t: 'upgrade', x: 3, y: 5 }]))
+  const t = L.towers[5 * COLS + 3]!
+  assert.equal(t.level, 4)
+  assert.equal(t.branch, 'melt')
+  assert.equal(t.invested, 90 * (1 + 1 + 2 + 3))
+  assert.equal(towerStats(t).dps, Math.floor(TOWERS.laser.dps * 512 / 100 * MC))
+  step(g, at(0, [{ t: 'upgrade', x: 3, y: 5 }]))
+  assert.equal(t.level, 4, 'L4 is the max')
+}
+
+// 7b. Walls: 5 g, never shoot, don't upgrade; a gun built on one replaces it and the Wall's cost is credited.
+{
+  const { g, L } = game()
+  L.gold = 100
+  step(g, at(0, [{ t: 'build', x: 5, y: 10, kind: 'wall' }, { t: 'upgrade', x: 5, y: 10 }, { t: 'build', x: 5, y: 10, kind: 'wall' }]))
+  assert.equal(L.gold, 95)
+  assert.equal(L.towers[10 * COLS + 5]!.kind, 'wall')
+  const r = put(g, L, 'tank', 5, 11)
+  r.stun = 1e9
+  for (let i = 0; i < 40; i++) quiet(g)
+  assert.equal(r.hp, r.maxHp, 'a Wall never shoots')
+  step(g, at(0, [{ t: 'build', x: 5, y: 10, kind: 'gatling' }]))
+  assert.equal(L.towers[10 * COLS + 5]!.kind, 'gatling')
+  assert.equal(L.gold, 95 - 20, 'the gun costs 25 minus the Wall')
+  assert.equal(L.sealed, false)
 }
 
 // 8. Each attack type, with stunned robots parked next to a tower.

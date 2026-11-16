@@ -32,6 +32,11 @@ const plate = () => {
 
 // Towers: pivot 'turret' sits on top of the base (y = 0.22) and yaws toward the target.
 export const TOWER_MODELS: Record<TowerKind, Part[]> = {
+  wall: [ // a scrap block with a hazard band: reads as "maze", not "gun"
+    p(plate(), 'root', METAL),
+    p(box(0.7, 0.3, 0.7, 0, 0.37, 0), 'root', DARK),
+    p(box(0.72, 0.05, 0.72, 0, 0.44, 0), 'root', HAZARD),
+  ],
   gatling: [
     p(plate(), 'root', METAL),
     p(cyl(0.22, 0.26, 0.16, 8).translate(0, 0.08, 0), 'turret', DARK),

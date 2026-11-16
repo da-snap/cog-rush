@@ -87,7 +87,7 @@
     .inc { color: var(--online); font-weight: 700; }
     .grid { display: grid; gap: 6px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    .grid.six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .grid.seven { grid-template-columns: repeat(7, minmax(0, 1fr)); }
     .row { display: flex; gap: 6px; }
     .row > * { flex: 1; }
     .card input { min-height: 44px; width: 100%; box-sizing: border-box; padding: 0 10px; margin: 0 0 8px; background: var(--hull); color: var(--white); border: 0; box-shadow: inset 0 0 0 2px var(--seam2); font: 700 15px var(--ui); clip-path: var(--cut-s); }
@@ -230,11 +230,12 @@
         <p><b>Core HP</b>: you have 100. A robot reaching your exit damages it by size: Scout 1, Drone 2, Repair/Shield/Splitter 3, Tank/Breaker 4, Colossus 15, double while your lane is sealed. 0 = you lose.</p>
         <p><b>Overdrive</b>: a release of 6 or more robots spawns with a 30% shield. EMP fields strip shields and jam Repair and Shield bots; Laser beams ignore shields.</p>
         <p><b>Income</b>: paid every 5 s (the striped bar under the stats). Every 25 gold of robots you send adds +1 for the rest of the match. You have 4 factory slots; slot 1 starts with the Scout factory. Tap an empty slot in Send to build another one (it takes a while to build and costs a little upkeep from every payout), tap the ⚙ under a factory to upgrade or demolish it. Each factory has its own queue and builds at the same time as the others. Income freezes while your lane is sealed.</p>
-        <p><b>Build</b>: pick a tower (1–6 or the Build tab), then click a cell for one tower or click and drag for a row. The tower stays picked; stop with Esc, right-click or <b>Stop building</b>. Click a placed tower to upgrade or sell it.</p>
+        <p><b>Build</b>: pick a tower (1–7 or the Build tab), then click a cell for one tower or click and drag for a row. The tower stays picked; stop with Esc, right-click or <b>Stop building</b>. Click a placed tower to upgrade or sell it.</p>
+        <p><b>Mazing</b>: Walls cost 5 g and only block. Robots walk the shortest open path, so a long maze keeps them in range. Pick a gun and tap a Wall to build it there; the Wall's 5 g count toward it. Big guns (EMP, Mortar, Tesla, Laser) can be Overclocked to L4. Breakers smash Walls next to their path.</p>
         <p><b>Counter</b>: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.</p>
       </div>
       <table class="keys">
-        <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>Pick a tower to build (Gatling, Flak, EMP, Mortar, Tesla, Laser)</td></tr>
+        <tr><td><kbd>1</kbd>–<kbd>7</kbd></td><td>Pick a tower to build (Wall, Gatling, Flak, EMP, Mortar, Tesla, Laser)</td></tr>
         <tr><td><kbd>U</kbd></td><td>Upgrade the selected tower</td></tr>
         <tr><td><kbd>A</kbd> / <kbd>B</kbd></td><td>Pick level 3 branch A or B</td></tr>
         <tr><td><kbd>S</kbd></td><td>Sell the selected tower</td></tr>

@@ -34,24 +34,33 @@ export const ARMOR_MULT_PCT: Record<DamageType, Record<Armor, number>> = {
   energy: { light: 100, heavy: 50, shielded: 150 },
 }
 
-// Upgrades: L2 costs 1x base, L3 2x base. Each level: +60% dmg, +10% range, +25% HP (compounding).
-export const UPGRADE = { costMult: [1, 2], dmgPct: 160, rangePct: 110, hpPct: 125 }
+// Upgrades, per step L1→L2, L2→L3 (pick a branch), L3→L4 Overclock (mazing pass 2026-11-16: a few big anchor towers
+// with a long maze around them is a real alternative to many small ones). Cost in multiples of the base cost, stats compound.
+export const UPGRADE = { costMult: [1, 2, 3], dmgPct: [160, 160, 200], rangePct: [110, 110, 120], hpPct: [125, 125, 150] }
+export const MAX_LEVEL = UPGRADE.costMult.length + 1
+export const OVERCLOCK_MIN_COST = 50 // L4 is for the big guns (EMP, Mortar, Tesla, Laser); Gatling and Flak stop at L3
 
-export type Attack = 'single' | 'splash' | 'aura' | 'chain' | 'beam'
+export type Attack = 'none' | 'single' | 'splash' | 'aura' | 'chain' | 'beam'
 export interface TowerDef {
   name: string; cost: number; hp: number; rangeMc: number; dps: number; dmg: DamageType
   ground: boolean; air: boolean; attack: Attack
   period: number // ticks between shots; damage per shot = dps * period / TICK_HZ
   splashMc?: number; slowPct?: number; chain?: number; chainMc?: number; beamMc?: number
-  branches: [Branch, Branch]
+  branches: Branch[] // two, picked at L3; none for the Wall
 }
 export interface Branch { key: string; name: string; desc: string }
 
 // Crowd movement retune (Daniel 2026-11-14): every tower's dps x1.5, because grouped sends pass a tower in ~1 s
 // instead of a 6 s line and any-angle routes are 10-20% shorter. Splash unchanged (robots per shell stayed ~2.2).
+// Mazing pass (Daniel 2026-11-16): ground guns' dps x0.7, since Wall mazes keep robots in range ~2x as long;
+// an unmazed lane no longer holds. Flak keeps its dps: Drones fly over mazes.
 export const TOWERS = {
+  // mazing pass (Daniel 2026-11-16): a cheap block that only shapes the path. Build a gun on it later and the Wall's cost is credited.
+  wall: {
+    name: 'Wall', cost: 5, hp: 200, rangeMc: 0, dps: 0, dmg: 'kinetic', ground: false, air: false, attack: 'none', period: 1, branches: [],
+  },
   gatling: {
-    name: 'Gatling', cost: 25, hp: 250, rangeMc: 3000, dps: 22.5, dmg: 'kinetic', ground: true, air: true, attack: 'single', period: 2,
+    name: 'Gatling', cost: 25, hp: 250, rangeMc: 3000, dps: 16, dmg: 'kinetic', ground: true, air: true, attack: 'single', period: 2,
     branches: [{ key: 'pierce', name: 'Armor-piercing', desc: 'Ignores armor type' }, { key: 'overdrive', name: 'Overdrive', desc: '+80% fire rate' }],
   },
   flak: {
@@ -60,19 +69,19 @@ export const TOWERS = {
     branches: [{ key: 'longRange', name: 'Long range', desc: '+50% range' }, { key: 'shrapnel', name: 'Shrapnel', desc: 'Wider splash' }],
   },
   emp: {
-    name: 'EMP', cost: 50, hp: 220, rangeMc: 2500, dps: 7.5, dmg: 'energy', ground: true, air: true, attack: 'aura', period: 10, slowPct: 40,
+    name: 'EMP', cost: 50, hp: 220, rangeMc: 2500, dps: 5, dmg: 'energy', ground: true, air: true, attack: 'aura', period: 10, slowPct: 40,
     branches: [{ key: 'stun', name: 'Stun pulse', desc: 'Stuns robots in range every 5 s' }, { key: 'overload', name: 'Overload', desc: 'Slowed robots take +25% damage' }],
   },
   mortar: {
-    name: 'Mortar', cost: 60, hp: 250, rangeMc: 4000, dps: 27, dmg: 'explosive', ground: true, air: false, attack: 'splash', period: 30, splashMc: 1000,
+    name: 'Mortar', cost: 60, hp: 250, rangeMc: 4000, dps: 19, dmg: 'explosive', ground: true, air: false, attack: 'splash', period: 30, splashMc: 1000,
     branches: [{ key: 'burn', name: 'Burning ground', desc: 'Impact cell burns for 3 s' }, { key: 'cluster', name: 'Cluster shells', desc: '3 smaller impacts' }],
   },
   tesla: {
-    name: 'Tesla', cost: 70, hp: 250, rangeMc: 2500, dps: 22.5, dmg: 'energy', ground: true, air: true, attack: 'chain', period: 10, chain: 3, chainMc: 1500,
+    name: 'Tesla', cost: 70, hp: 250, rangeMc: 2500, dps: 16, dmg: 'energy', ground: true, air: true, attack: 'chain', period: 10, chain: 3, chainMc: 1500,
     branches: [{ key: 'chain5', name: 'Chain 5', desc: 'Chains to 5 targets' }, { key: 'arcFocus', name: 'Arc focus', desc: '+100% damage, chains to 1' }],
   },
   laser: {
-    name: 'Laser', cost: 90, hp: 270, rangeMc: 5000, dps: 45, dmg: 'energy', ground: true, air: false, attack: 'beam', period: 1, beamMc: 400,
+    name: 'Laser', cost: 90, hp: 270, rangeMc: 5000, dps: 32, dmg: 'energy', ground: true, air: false, attack: 'beam', period: 1, beamMc: 400,
     branches: [{ key: 'wide', name: 'Wide beam', desc: 'Wider beam' }, { key: 'melt', name: 'Melt', desc: 'Damage ramps up on the same target' }],
   },
 } satisfies Record<string, TowerDef>
@@ -105,14 +114,15 @@ export interface RobotDef {
 // balance vs GDD: Scout 60→40 HP, Drone 120→90, Tank 400→480, Breaker 300→360 (speed decides exposure in a maze)
 export const ROBOTS: Record<RobotKind, RobotDef> = {
   scout: { name: 'Scout', armor: 'light', air: false, hp: 40, speedMcPerS: 2000, sendCost: 10, buildS: 2, maxWave: 8, factoryCost: 100, leak: 1, towerDps: 10, radiusMc: 160 },
-  drone: { name: 'Drone', armor: 'light', air: true, hp: 90, speedMcPerS: 1400, sendCost: 25, buildS: 3, maxWave: 6, factoryCost: 120, leak: 2, towerDps: 0, radiusMc: 0 },
+  drone: { name: 'Drone', armor: 'light', air: true, hp: 70, speedMcPerS: 1400, sendCost: 30, buildS: 3, maxWave: 6, factoryCost: 120, leak: 2, towerDps: 0, radiusMc: 0 },
   repair: { name: 'Repair bot', armor: 'light', air: false, hp: 150, speedMcPerS: 1000, sendCost: 30, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10, radiusMc: 225 },
   shield: { name: 'Shield bot', armor: 'shielded', air: false, hp: 200, speedMcPerS: 1000, sendCost: 35, buildS: 4, maxWave: 3, factoryCost: 150, leak: 3, towerDps: 10, radiusMc: 225 },
-  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 400, speedMcPerS: 800, sendCost: 40, buildS: 5, maxWave: 4, factoryCost: 150, leak: 4, towerDps: 10, radiusMc: 240 },
+  tank: { name: 'Tank', armor: 'heavy', air: false, hp: 500, speedMcPerS: 800, sendCost: 40, buildS: 5, maxWave: 4, factoryCost: 150, leak: 4, towerDps: 10, radiusMc: 240 },
   splitter: { name: 'Splitter', armor: 'shielded', air: false, hp: 250, speedMcPerS: 1000, sendCost: 45, buildS: 5, maxWave: 3, factoryCost: 180, leak: 3, towerDps: 10, radiusMc: 225 },
-  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 300, speedMcPerS: 900, sendCost: 50, buildS: 6, maxWave: 3, factoryCost: 200, leak: 4, towerDps: 20, radiusMc: 240 },
+  breaker: { name: 'Breaker', armor: 'heavy', air: false, hp: 380, speedMcPerS: 900, sendCost: 50, buildS: 6, maxWave: 3, factoryCost: 200, leak: 4, towerDps: 20, radiusMc: 240 },
   colossus: { name: 'Colossus', armor: 'heavy', air: false, hp: 3000, speedMcPerS: 600, sendCost: 300, buildS: 30, maxWave: 1, factoryCost: 400, leak: 15, towerDps: 40, radiusMc: 480 },
 }
+export const BREAKER_WALL_MULT = 5 // mazing pass: Breakers smash Walls next to their path in 2 s, cutting a shortcut through a bare-Wall maze
 export const ROBOT_KINDS = Object.keys(ROBOTS) as RobotKind[]
 
 export const AURA = { repairMc: 2000, repairPctPerS: 1.5, shieldMc: 2000, shieldPct: 25 } // balance: % of the target's max HP (flat GDD values break once HP scales; healing stacks up over a long maze)

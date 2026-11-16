@@ -12,6 +12,7 @@ export const ARMOR_COLOR: Record<Armor, number> = { light: 0xd9dee5, heavy: 0xff
 
 // 24px stroke icons from the design system: towers have a round core, robots wear their armor silhouette.
 export const TOWER_ICON: Record<TowerKind, string> = {
+  wall: 'M3 7h18v10H3zM3 12h18M9 7v5M15 12v5',
   gatling: 'M7 14a5 5 0 1 0 10 0a5 5 0 1 0 -10 0M10 9V3M14 9V3',
   flak: 'M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0M12 2v5M12 17v5M2 12h5M17 12h5M5 5l3 3M19 5l-3 3',
   emp: 'M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0M4.5 7.5a9 9 0 0 1 15 0M4.5 16.5a9 9 0 0 0 15 0',
@@ -31,7 +32,7 @@ export const ROBOT_ICON: Record<RobotKind, string> = {
 }
 
 export const hex = (c: number) => '#' + c.toString(16).padStart(6, '0')
-export const towerColor = (k: TowerKind) => DMG_COLOR[TOWERS[k].dmg]
+export const towerColor = (k: TowerKind) => k === 'wall' ? C.dust : DMG_COLOR[TOWERS[k].dmg]
 export const robotColor = (k: RobotKind) => ARMOR_COLOR[ROBOTS[k].armor]
 /** Inline SVG for HTML panels, same icons as the board. */
 export const svgIcon = (d: string, color: number, size = 22) =>

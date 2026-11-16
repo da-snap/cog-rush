@@ -1,8 +1,8 @@
 // Deterministic match sim: fixed 20 Hz tick, integer math, input is a list of commands per tick.
 // Engine-independent: no DOM, no Pixi, no Math.random. One Lane per player; sends go to the next lane in the ring.
 import {
-  ARMOR_MULT_PCT, AURA, BRANCH, BREACH, COLS, EXIT_ROWS, FACTORY, FIRST_WAVE_S, INCOME_EVERY_S, LIVES, MC, ROBOTS, ROWS,
-  SELL_REFUND_PCT, SEND, SPAWN_ROWS, START_GOLD, START_INCOME, SUDDEN, TICK_HZ, TOWERS, UPGRADE,
+  ARMOR_MULT_PCT, AURA, BRANCH, BREACH, BREAKER_WALL_MULT, COLS, EXIT_ROWS, FACTORY, FIRST_WAVE_S, INCOME_EVERY_S, LIVES, MC, ROBOTS, ROWS,
+  MAX_LEVEL, OVERCLOCK_MIN_COST, SELL_REFUND_PCT, SEND, SPAWN_ROWS, START_GOLD, START_INCOME, SUDDEN, TICK_HZ, TOWERS, UPGRADE,
   WAVE_EVERY_S, WAVE_HP_GROWTH_PCT, neutralWave, type DamageType, type RobotKind, type TowerDef, type TowerKind,
 } from './config.ts'
 
@@ -99,7 +99,7 @@ export function newGame(players = 2): Game {
 
 // --- towers ----------------------------------------------------------------
 
-const compound = (pct: number, level: number) => { let v = 100; for (let i = 1; i < level; i++) v = Math.floor(v * pct / 100); return v }
+const compound = (pct: number[], level: number) => { let v = 100; for (let i = 1; i < level; i++) v = Math.floor(v * pct[i - 1] / 100); return v }
 
 export function towerStats(t: Pick<Tower, 'kind' | 'level' | 'branch'>) {
   const d: TowerDef = TOWERS[t.kind]
@@ -121,7 +121,11 @@ export function towerStats(t: Pick<Tower, 'kind' | 'level' | 'branch'>) {
 }
 
 export const upgradeCost = (t: Tower) => TOWERS[t.kind].cost * UPGRADE.costMult[t.level - 1]
+export const maxLevel = (kind: TowerKind) => !TOWERS[kind].branches.length ? 1 : TOWERS[kind].cost >= OVERCLOCK_MIN_COST ? MAX_LEVEL : MAX_LEVEL - 1
 export const sellValue = (t: Tower) => Math.floor(t.invested * SELL_REFUND_PCT / 100)
+// a gun built on a Wall replaces it and the Wall's cost is credited, so a maze can be armed without opening it
+export const buildCost = (L: Lane, x: number, y: number, kind: TowerKind) => TOWERS[kind].cost - (isWall(L.towers[idx(x, y)]) ? L.towers[idx(x, y)]!.invested : 0)
+const isWall = (t: Tower | null) => t?.kind === 'wall'
 
 export function newTower(kind: TowerKind, x: number, y: number): Tower {
   const hp = TOWERS[kind].hp * MC
@@ -201,16 +205,18 @@ const onCell = (r: Robot, x: number, y: number) => !ROBOTS[r.kind].air && toCell
 
 export function canBuild(L: Lane, x: number, y: number, kind: TowerKind): string | null {
   if (!buildable(x, y)) return 'Spawn and exit zones are not buildable'
-  if (L.towers[idx(x, y)]) return 'Cell is taken'
-  if (L.gold < TOWERS[kind].cost) return 'Not enough gold'
-  if (L.robots.some(r => r.hp > 0 && onCell(r, x, y))) return 'A robot is on this cell'
+  const old = L.towers[idx(x, y)]
+  if (old && (!isWall(old) || kind === 'wall')) return 'Cell is taken'
+  if (L.gold < buildCost(L, x, y, kind)) return 'Not enough gold'
+  if (!old && L.robots.some(r => r.hp > 0 && onCell(r, x, y))) return 'A robot is on this cell'
   return null
 }
 
 export function canUpgrade(L: Lane, x: number, y: number, branch?: string): string | null {
   const t = L.towers[idx(x, y)]
   if (!t) return 'No tower'
-  if (t.level >= 3) return 'Max level'
+  if (!TOWERS[t.kind].branches.length) return 'Walls do not upgrade, build a tower on it'
+  if (t.level >= maxLevel(t.kind)) return 'Max level'
   if (t.level === 2 && !TOWERS[t.kind].branches.some(b => b.key === branch)) return 'Pick a branch'
   if (L.gold < upgradeCost(t)) return 'Not enough gold'
   return null
@@ -393,8 +399,9 @@ function apply(g: Game, c: Cmd) {
   switch (c.t) {
     case 'build': {
       if (canBuild(L, c.x, c.y, c.kind)) return
-      L.gold -= TOWERS[c.kind].cost
-      L.stats.towerGold += TOWERS[c.kind].cost
+      const cost = buildCost(L, c.x, c.y, c.kind)
+      L.gold -= cost
+      L.stats.towerGold += cost
       L.towers[idx(c.x, c.y)] = { ...newTower(c.kind, c.x, c.y), id: g.nextId++ }
       return recompute(L)
     }
@@ -648,7 +655,7 @@ function hitTower(g: Game, L: Lane, t: Tower, r: Robot, breach: boolean): boolea
     : [t]
   let lost = false
   for (const o of hit) {
-    o.hp -= dmg
+    o.hp -= r.kind === 'breaker' && o.kind === 'wall' ? dmg * BREAKER_WALL_MULT : dmg
     if (o.hp <= 0) { // destroyed in a breach: no refund
       L.towers[idx(o.x, o.y)] = null
       g.events.push({ t: 'towerLost', p: L.p, tower: o.id })
@@ -695,7 +702,7 @@ const progress = (L: Lane, r: Robot) => {
 
 function fireTowers(g: Game, L: Lane) {
   for (const t of L.towers) {
-    if (!t) continue
+    if (!t || t.kind === 'wall') continue
     if (t.cd > 0) { t.cd--; continue }
     const st = towerStats(t), d = st.def
     const tx = center(t.x), ty = center(t.y)

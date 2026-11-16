@@ -5,12 +5,12 @@ import { newGame, step, type Tower } from './sim.ts'
 
 export const STRATEGIES: Strategy[] = [
   DIFFICULTY.easy, DIFFICULTY.normal, DIFFICULTY.hard,
-  { name: 'Turtle', delay: 10, defense: 85, factories: ['tank', 'shield'], burst: 3, counter: true, mazeTowers: 12 },
-  { name: 'Rush', delay: 10, defense: 35, factories: ['tank'], burst: 6, counter: true, mazeTowers: 6 },
-  { name: 'Air', delay: 10, defense: 55, factories: ['drone'], sends: ['drone', 'scout'], burst: 6, counter: true, mazeTowers: 10 },
-  { name: 'Heavy', delay: 10, defense: 55, factories: ['tank', 'breaker', 'colossus'], sends: ['tank', 'breaker', 'colossus'], burst: 5, counter: true, mazeTowers: 10 },
-  { name: 'Swarm', delay: 10, defense: 55, factories: ['splitter', 'shield', 'repair'], sends: ['splitter', 'shield', 'repair', 'scout'], burst: 8, counter: true, mazeTowers: 10 },
-  { name: 'Scouts', delay: 10, defense: 55, factories: [], sends: ['scout'], burst: 12, counter: true, mazeTowers: 10 },
+  { name: 'Turtle', delay: 10, defense: 85, factories: ['tank', 'shield'], burst: 3, counter: true, maze: 'serpent', wallPct: 40 },
+  { name: 'Rush', delay: 10, defense: 35, factories: ['tank'], burst: 6, counter: true, maze: 'greedy', wallPct: 15 },
+  { name: 'Air', delay: 10, defense: 55, factories: ['drone'], sends: ['drone', 'scout'], burst: 6, counter: true, maze: 'killbox' },
+  { name: 'Heavy', delay: 10, defense: 55, factories: ['tank', 'breaker', 'colossus'], sends: ['tank', 'breaker', 'colossus', 'scout'], burst: 5, counter: true, maze: 'killbox' },
+  { name: 'Swarm', delay: 10, defense: 55, factories: ['splitter', 'shield', 'repair'], sends: ['splitter', 'shield', 'repair', 'scout'], burst: 8, counter: true, maze: 'greedy' },
+  { name: 'Scouts', delay: 10, defense: 55, factories: [], sends: ['scout'], burst: 12, counter: true, maze: 'serpent' },
 ]
 
 // fun metrics (see the plan doc): when the first life is lost, how often the lead in lives changes hands
