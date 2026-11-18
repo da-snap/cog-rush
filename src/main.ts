@@ -508,7 +508,7 @@ const secsOf = (ticks: number) => `${Math.ceil(ticks / TICK_HZ)}s`
 function sendHtml(g: Game, L: Lane): string {
   const ready = readyCount(L), up = upkeep(L)
   const prep = secs(g) < SEND.prepS
-  const info = [prep && `Release unlocks in ${Math.ceil(SEND.prepS - secs(g))}s`, up && `upkeep <span class="warn">−${up}</span>/${INCOME_EVERY_S}s`].filter(Boolean).join(' · ')
+  const info = up ? `upkeep <span class="warn">−${up}</span>/${INCOME_EVERY_S}s` : ''
   const tiles = L.slots.map((f, i) => {
     if (!f) return btn('slot', '+ Build', { arg: String(i), cls: 'tile empty', sub: 'factory' })
     const k = f.kind, r = ROBOTS[k], icon = svgIcon(ROBOT_ICON[k], robotColor(k), 18)
@@ -520,7 +520,7 @@ function sendHtml(g: Game, L: Lane): string {
   }).join('')
   const manage = L.slots.map((f, i) => f ? btn('slot', `L${f.level} ⚙`, { arg: String(i), cls: 'mini' }) : '<span></span>').join('')
   return `${info ? `<div class="info">${info}</div>` : ''}<div class="grid four">${tiles}</div><div class="grid four manage">${manage}</div>` +
-    `<div class="row" style="margin-top:5px">${btn('release', `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L), key: 'Space' })}</div>`
+    `<div class="row" style="margin-top:5px">${btn('release', prep ? `Release in ${Math.ceil(SEND.prepS - secs(g))}s` : `Release${ready ? ` ${ready}` : ''}`, { cls: 'go', off: !!canRelease(g, L), key: 'Space' })}</div>`
 }
 
 function pickHtml(L: Lane, slot: number): string {
