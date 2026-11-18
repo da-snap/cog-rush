@@ -1,7 +1,7 @@
 // 3D view of the match (three.js). Pure view: reads sim state and events, never changes them.
 import * as THREE from 'three'
 import { AURA, COLS, EXIT_ROWS, MC, ROBOTS, ROWS, SPAWN_ROWS, TOWERS, type RobotKind, type TowerKind } from './sim/config.ts'
-import { INF, field, pathFrom, towerStats, wouldSeal, type Game, type Tower } from './sim/sim.ts'
+import { INF, buildCost, field, isWall, pathFrom, towerStats, wouldSeal, type Game, type Tower } from './sim/sim.ts'
 import { BARREL_AXIS, PIVOT_AT, RIG, ROBOT_MODELS, TOWER_MODELS, merge, type Part, type Pivot } from './models.ts'
 import * as sfx from './audio.ts'
 
@@ -723,9 +723,12 @@ export class Scene3D {
         this.selRing.position.set(ox + tw.x + 0.5, 0.05 + Math.sin(t * 4) * 0.02, tw.y + 0.5)
       }
     } else this.selRing.visible = false
-    if (!ui.sel && ui.buildKind && ui.hover && !ui.drag.length && !L.towers[ui.hover.y * COLS + ui.hover.x]) {
-      ghostAt(ui.hover.y * COLS + ui.hover.x, sealedNow)
-      rangeAt = { x: ui.hover.x, y: ui.hover.y, r: TOWERS[ui.buildKind].rangeMc / MC, red: sealedNow }
+    const under = ui.hover && L.towers[ui.hover.y * COLS + ui.hover.x]
+    // a gun picked also previews on a Wall (it builds on top of it)
+    if (!ui.sel && ui.buildKind && ui.hover && !ui.drag.length && (!under || (isWall(under) && ui.buildKind !== 'wall'))) {
+      const red = sealedNow || L.gold < buildCost(L, ui.hover.x, ui.hover.y, ui.buildKind) // red ghost: would seal, or not enough parts
+      ghostAt(ui.hover.y * COLS + ui.hover.x, red)
+      rangeAt = { x: ui.hover.x, y: ui.hover.y, r: TOWERS[ui.buildKind].rangeMc / MC, red }
     }
     if (!ui.sel) this.selRing.visible = false
     this.range.visible = this.rangeFill.visible = !!rangeAt

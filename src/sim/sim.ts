@@ -125,7 +125,7 @@ export const maxLevel = (kind: TowerKind) => !TOWERS[kind].branches.length ? 1 :
 export const sellValue = (t: Tower) => Math.floor(t.invested * SELL_REFUND_PCT / 100)
 // a gun built on a Wall replaces it and the Wall's cost is credited, so a maze can be armed without opening it
 export const buildCost = (L: Lane, x: number, y: number, kind: TowerKind) => TOWERS[kind].cost - (isWall(L.towers[idx(x, y)]) ? L.towers[idx(x, y)]!.invested : 0)
-const isWall = (t: Tower | null) => t?.kind === 'wall'
+export const isWall = (t: Tower | null) => t?.kind === 'wall'
 
 export function newTower(kind: TowerKind, x: number, y: number): Tower {
   const hp = TOWERS[kind].hp * MC

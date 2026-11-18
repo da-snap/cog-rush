@@ -67,6 +67,7 @@ let prev = new Map<number, { x: number; y: number }>()
 let drag: { cells: number[]; last: number } | null = null
 let buildKind: TowerKind | null = null // build mode: picked tower, stays picked until cancelled
 let hover: { x: number; y: number } | null = null // cell under the mouse, for the build preview
+let mouse = { x: 0, y: 0, on: false } // last pointer position over the lane (mouse only), for the cost tip
 let sealArmed = -1 // a cell that would seal the lane needs a second click
 let toastUntil = 0
 
@@ -360,6 +361,7 @@ laneEl.addEventListener('pointermove', e => {
   if (!g) return
   const c = cellAt(e)
   hover = c && mainLane() === ME ? c : null
+  mouse = { x: e.clientX, y: e.clientY, on: e.pointerType === 'mouse' }
   if (!drag || !c) return
   const i = c.y * COLS + c.x
   if (i === drag.last) return
@@ -372,7 +374,7 @@ laneEl.addEventListener('pointermove', e => {
   }
   drag.last = i
 })
-laneEl.addEventListener('pointerleave', () => { if (!drag) hover = null })
+laneEl.addEventListener('pointerleave', () => { mouse.on = false; if (!drag) hover = null })
 // right click leaves build mode on desktop
 laneEl.addEventListener('contextmenu', e => { e.preventDefault(); if (drag) cancelDrag(); else stopBuilding() })
 
@@ -416,6 +418,24 @@ function pickTower(k: TowerKind, toggle = true) {
   buildKind = toggle && buildKind === k ? null : k
   sel = null; sealArmed = -1; tab = 'build'; view = ME
   renderPanel(true)
+}
+/** small tip by the mouse: the picked tower's cost (red when short of parts), and that a Wall takes a tower */
+const tipEl = $('tip')
+function costTip(g: Game) {
+  const L = g.lanes[ME], t = hover && !sel && !drag && mouse.on ? L.towers[hover.y * COLS + hover.x] : null
+  let text = '', no = false
+  if (hover && !sel && !drag && mouse.on && buildable(hover.x, hover.y)) {
+    if (buildKind && (!t || (t.kind === 'wall' && buildKind !== 'wall'))) {
+      const cost = buildCost(L, hover.x, hover.y, buildKind)
+      no = L.gold < cost
+      text = `${TOWERS[buildKind].name}${t ? ' on Wall' : ''} ${cost}p` + (no ? ` · need ${cost - Math.floor(L.gold)}p more` : '')
+    } else if (t?.kind === 'wall') text = buildKind === 'wall' ? 'Wall · pick a gun (2–7) to build on it' : 'Wall · click to build a tower on it'
+  }
+  tipEl.hidden = !text
+  if (!text) return
+  tipEl.textContent = text
+  tipEl.classList.toggle('no', no)
+  tipEl.style.left = mouse.x + 14 + 'px'; tipEl.style.top = mouse.y + 14 + 'px'
 }
 function stopBuilding() {
   buildKind = null; sealArmed = -1
@@ -479,7 +499,7 @@ function buildHtml(g: Game, L: Lane): string {
       : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · click for one, drag for a row`
       : 'Pick a tower to build · click a placed tower to upgrade or sell'
     return `<div class="info">${msg}</div><div class="grid seven">` +
-      TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost">${TOWERS[x].cost}p</span><kbd>${i + 1}</kbd></button>`).join('') +
+      TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost"${L.gold < TOWERS[x].cost ? ' style="color:var(--rogue)"' : ''}>${TOWERS[x].cost}p</span><kbd>${i + 1}</kbd></button>`).join('') +
       '</div>' + (k ? `<div class="row" style="margin-top:6px">${btn('stop', 'Stop building', { cls: 'alt', key: 'Esc' })}</div>` : radarHtml(L, 'Your defense'))
   }
   const st = towerStats(t), d = TOWERS[t.kind]
@@ -767,6 +787,7 @@ function frame(now: number) {
   }
   if (stepped) { hud(g); renderPanel() }
   world.render(g, ui, alpha, prev, dtMs / 1000, innerWidth, innerHeight)
+  costTip(g)
   const L = g.lanes[ME]
   yards.render([...document.querySelectorAll<HTMLElement>('#body .tile.fac')].reduce((a, el) => {
     const i = +el.dataset.arg!, f = L.slots[i]
