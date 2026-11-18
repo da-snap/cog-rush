@@ -125,7 +125,7 @@ const perIp = new Map<string, number>()
 const clean = (c: Record<string, unknown>, p: number) => {
   const o: Record<string, unknown> = { p }
   for (const k of ['t', 'kind', 'branch']) if (typeof c[k] === 'string' && (c[k] as string).length <= 16) o[k] = c[k]
-  for (const k of ['x', 'y']) if (Number.isInteger(c[k])) o[k] = c[k]
+  for (const k of ['x', 'y', 'slot']) if (Number.isInteger(c[k])) o[k] = c[k]
   return typeof o.t === 'string' ? o : null
 }
 
