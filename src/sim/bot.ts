@@ -72,7 +72,7 @@ export function botThink(g: Game, p: number, st: Strategy, mem: BotMem): Cmd[] {
 
   // release whatever is ready once the burst size is reached (or the wave is full)
   const ready = readyCount(L)
-  const full = L.slots.every((f, i) => !f || canLoad(g, L, i) !== null && canLoad(g, L, i) !== 'Not enough gold') // nothing more fits in any queue
+  const full = L.slots.every((f, i) => !f || canLoad(g, L, i) !== null && canLoad(g, L, i) !== 'Not enough parts') // nothing more fits in any queue
   if (!canRelease(g, L) && (ready >= st.burst || full || g.tick - mem.lastRelease > 25 * TICK_HZ)) {
     cmds.push({ p, t: 'release' })
     mem.lastRelease = g.tick

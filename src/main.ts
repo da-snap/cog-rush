@@ -80,10 +80,10 @@ const ladderBeaten = () => Number(store.get('ladder') ?? -1)
 
 // daily challenge: same rival and rule for everyone on a given day
 const MODS: { name: string; desc: string; apply: (g: Game) => void }[] = [
-  { name: 'Gold rush', desc: 'Both start with 500 gold', apply: g => { for (const L of g.lanes) L.gold = 500 } },
+  { name: 'Parts rush', desc: 'Both start with 500 parts', apply: g => { for (const L of g.lanes) L.gold = 500 } },
   { name: 'Glass core', desc: 'Both cores have only 40 HP', apply: g => { for (const L of g.lanes) L.lives = 40 } },
   { name: 'Drone day', desc: 'Both start with a Drone factory', apply: g => { for (const L of g.lanes) L.slots[1] = { kind: 'drone', level: 1, invested: 0, build: 0, queue: [] } } },
-  { name: 'Underdog', desc: 'You start with 300 gold, the rival with +10 income', apply: g => { g.lanes[ME].gold = 300; g.lanes[OPP].income += 10 } },
+  { name: 'Underdog', desc: 'You start with 300 parts, the rival with +10 income', apply: g => { g.lanes[ME].gold = 300; g.lanes[OPP].income += 10 } },
 ]
 const today = () => Math.floor(Date.now() / 86_400_000)
 const daily = (day: number) => ({ day, i: 2 + (day * 5) % (RIVALS.length - 2), mod: day % MODS.length })
@@ -155,7 +155,7 @@ function end(game: Game) {
   const rows: [string, (L: Lane) => string | number][] = [
     ['Core HP left', L => L.lives], ['Robots killed', L => L.stats.kills], ['Robots sent', L => L.stats.sent],
     ['Leaks taken', L => L.stats.leaksTaken], ['Income', L => `+${L.income}`],
-    ['Gold on towers', L => L.stats.towerGold], ['Gold on sends', L => L.stats.sendGold],
+    ['Parts on towers', L => L.stats.towerGold], ['Parts on sends', L => L.stats.sendGold],
   ]
   $('endStats').innerHTML = `<tr><td></td><td>You</td><td>${rival()}</td></tr>` + rows.map(([n, f]) => `<tr><td>${n}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`).join('')
   $('end').hidden = false
@@ -403,7 +403,7 @@ laneEl.addEventListener('pointerup', () => {
     pending.push({ p: ME, t: 'build', x, y, kind })
     built++
   }
-  toast(`Row: ${built} ${TOWERS[kind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${short ? ', out of gold' : ''}`)
+  toast(`Row: ${built} ${TOWERS[kind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${short ? ', out of parts' : ''}`)
 })
 
 function cancelDrag() {
@@ -479,7 +479,7 @@ function buildHtml(g: Game, L: Lane): string {
       : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · click for one, drag for a row`
       : 'Pick a tower to build · click a placed tower to upgrade or sell'
     return `<div class="info">${msg}</div><div class="grid seven">` +
-      TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost">${TOWERS[x].cost}g</span><kbd>${i + 1}</kbd></button>`).join('') +
+      TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost">${TOWERS[x].cost}p</span><kbd>${i + 1}</kbd></button>`).join('') +
       '</div>' + (k ? `<div class="row" style="margin-top:6px">${btn('stop', 'Stop building', { cls: 'alt', key: 'Esc' })}</div>` : radarHtml(L, 'Your defense'))
   }
   const st = towerStats(t), d = TOWERS[t.kind]
@@ -516,7 +516,7 @@ function sendHtml(g: Game, L: Lane): string {
     const k = f.kind, r = ROBOTS[k], icon = svgIcon(ROBOT_ICON[k], robotColor(k), 18)
     if (f.build) return btn('noop', `${short(k)}`, { cls: 'tile', off: true, icon, sub: `building ${secsOf(f.build)}` })
     // the queue itself is drawn in 3D over the tile (factory3d.ts): pads, parts piles, robots
-    return btn('load', `${short(k)} <span class="cost">${r.sendCost}g</span>`, { arg: String(i), cls: 'tile fac', off: !!canLoad(g, L, i), key: 'QWER'[i] })
+    return btn('load', `${short(k)} <span class="cost">${r.sendCost}p</span>`, { arg: String(i), cls: 'tile fac', off: !!canLoad(g, L, i), key: 'QWER'[i] })
   }).join('')
   const manage = L.slots.map((f, i) => f ? btn('slot', `L${f.level} ⚙`, { arg: String(i), cls: 'mini' }) : '<span></span>').join('')
   return `${info ? `<div class="info">${info}</div>` : ''}<div class="grid four">${tiles}</div><div class="grid four manage">${manage}</div>` +
@@ -526,7 +526,7 @@ function sendHtml(g: Game, L: Lane): string {
 function pickHtml(L: Lane, slot: number): string {
   const tiles = ROBOT_KINDS.filter(k => !L.slots.some(f => f?.kind === k)).map(k => {
     const cost = ROBOTS[k].factoryCost
-    return btn('factory', short(k), { arg: k, cls: 'tile', off: L.gold < cost, icon: svgIcon(ROBOT_ICON[k], robotColor(k), 18), sub: `${cost}g ${secsOf(factoryTicks(cost))}` })
+    return btn('factory', short(k), { arg: k, cls: 'tile', off: L.gold < cost, icon: svgIcon(ROBOT_ICON[k], robotColor(k), 18), sub: `${cost}p ${secsOf(factoryTicks(cost))}` })
   }).join('')
   return `<div class="info">Slot ${slot + 1}: pick a factory · cost and build time</div><div class="grid four">${tiles}</div>` +
     `<div class="row" style="margin-top:5px">${btn('slotBack', 'Back', { cls: 'alt', key: 'Esc' })}</div>`
@@ -548,7 +548,7 @@ function manageHtml(L: Lane, slot: number): string {
 function opponentHtml(g: Game, L: Lane): string {
   const facts = L.slots.filter(f => !!f).map(f => `${ROBOTS[f.kind].name} L${f.level}${f.build ? ' (building)' : ''}`).join(', ')
   const towers = L.towers.filter(Boolean).length
-  return `<div class="info"><b class="warn">${rival().toUpperCase()} LANE</b> · ${L.lives} HP · <span class="cost">${L.gold}g</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
+  return `<div class="info"><b class="warn">${rival().toUpperCase()} LANE</b> · ${L.lives} HP · <span class="cost">${L.gold}p</span> · <span class="inc">+${L.income}</span>/${INCOME_EVERY_S}s · ${towers} towers</div>` +
     radarHtml(L, 'Their defense') + `<div class="info">Factories: ${facts}</div><div class="info">Queued: ${queuedCount(L)} robots${L.sealed ? ' · <span class="warn">sealed!</span>' : ''}</div>` +
     `<div class="row">${btn('back', 'Back to my lane', { cls: 'alt' })}</div>`
 }
@@ -663,21 +663,21 @@ function hud(g: Game) {
 // match runs); the others pause the match until Next. The bot sleeps until the tour ends.
 const towerCount = (L: Lane) => L.towers.filter(Boolean).length
 const TOUR: { text: string; spot?: string; done?: (L: Lane) => boolean; enter?: () => void }[] = [
-  { text: 'This is you: core HP, gold, and income. Income pays out every 5 s.', spot: '#meRow' },
+  { text: 'This is you: core HP, parts, and income. Income pays out every 5 s.', spot: '#meRow' },
   { text: 'Your rival. Robots that reach a core damage it. Break theirs to win.', spot: '.who.bot' },
   { text: 'Your lane. Robots enter at the top and walk to your core at the bottom.', spot: '#lane' },
   { text: 'Pick the Gatling tower.', spot: '#body', done: () => buildKind === 'gatling' },
   { text: 'Tap a cell to build it.', spot: '#lane', done: L => towerCount(L) >= 1 },
-  { text: 'Walls cost only 5 gold. Pick the Wall.', spot: '#body', done: () => buildKind === 'wall' },
+  { text: 'Walls cost only 5 parts. Pick the Wall.', spot: '#body', done: () => buildKind === 'wall' },
   { text: 'Drag across 4 cells to build a Wall row.', spot: '#lane', done: L => towerCount(L) >= 5 },
   { text: 'Robots take the shortest path. A long maze keeps them in your guns\' range: make it long, but never close it.', spot: '#lane' },
-  { text: 'Later, pick a gun and tap a Wall to build it there. The Wall\'s 5 gold count toward it.', spot: '#body' },
+  { text: 'Later, pick a gun and tap a Wall to build it there. The Wall\'s 5 parts count toward it.', spot: '#body' },
   { text: 'Time to attack. Open SEND.', spot: '[data-tab=send]', done: () => tab === 'send' },
-  { text: 'Load 3 Scouts (10 gold each, income refills your gold).', spot: '#body', done: L => queuedCount(L) >= 3 || L.released > 0 },
+  { text: 'Load 3 Scouts (10 parts each, income refills your parts).', spot: '#body', done: L => queuedCount(L) >= 3 || L.released > 0 },
   { text: 'Release them into your rival\'s lane (unlocks when the prep timer ends).', spot: '#body', done: L => L.released > 0 },
   { text: 'Every robot you send raises your income for the rest of the match.', spot: '#meRow' },
   { text: 'You have 4 factory slots. Tap an empty one to build a factory for stronger robots; each factory fills its own queue.', spot: '#body', enter: () => { tab = 'send'; slotView = null; renderPanel(true) } },
-  { text: 'A factory takes time to build and costs upkeep. Build one when your Scouts can\'t spend your gold fast enough.', spot: '#body' },
+  { text: 'A factory takes time to build and costs upkeep. Build one when your Scouts can\'t spend your parts fast enough.', spot: '#body' },
   { text: 'Counter armor: Kinetic beats Light, Explosive beats Heavy, Energy beats Shielded.', spot: '#body', enter: () => { tab = 'build'; renderPanel(true) } },
   { text: 'That\'s it! The Easy bot wakes up now. Press ? for help any time.' },
 ]

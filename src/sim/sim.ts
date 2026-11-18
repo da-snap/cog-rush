@@ -207,7 +207,7 @@ export function canBuild(L: Lane, x: number, y: number, kind: TowerKind): string
   if (!buildable(x, y)) return 'Spawn and exit zones are not buildable'
   const old = L.towers[idx(x, y)]
   if (old && (!isWall(old) || kind === 'wall')) return 'Cell is taken'
-  if (L.gold < buildCost(L, x, y, kind)) return 'Not enough gold'
+  if (L.gold < buildCost(L, x, y, kind)) return 'Not enough parts'
   if (!old && L.robots.some(r => r.hp > 0 && onCell(r, x, y))) return 'A robot is on this cell'
   return null
 }
@@ -218,7 +218,7 @@ export function canUpgrade(L: Lane, x: number, y: number, branch?: string): stri
   if (!TOWERS[t.kind].branches.length) return 'Walls do not upgrade, build a tower on it'
   if (t.level >= maxLevel(t.kind)) return 'Max level'
   if (t.level === 2 && !TOWERS[t.kind].branches.some(b => b.key === branch)) return 'Pick a branch'
-  if (L.gold < upgradeCost(t)) return 'Not enough gold'
+  if (L.gold < upgradeCost(t)) return 'Not enough parts'
   return null
 }
 
@@ -277,7 +277,7 @@ export function canFactory(L: Lane, slot: number, kind?: RobotKind): string | nu
     if (!kind) return 'Pick a factory'
     if (factoryOf(L, kind)) return 'Already built'
   }
-  if (L.gold < factoryCost(L, slot, kind)) return 'Not enough gold'
+  if (L.gold < factoryCost(L, slot, kind)) return 'Not enough parts'
   return null
 }
 
@@ -287,7 +287,7 @@ export function canLoad(g: Game, L: Lane, slot: number): string | null {
   if (f.build) return 'Under construction'
   if (f.kind === 'colossus' && secs(g) < SEND.colossusFromS) return 'Available from 5:00'
   if (f.queue.length >= waveCap(f.kind, f.level)) return 'Wave is full'
-  if (L.gold < ROBOTS[f.kind].sendCost) return 'Not enough gold'
+  if (L.gold < ROBOTS[f.kind].sendCost) return 'Not enough parts'
   return null
 }
 
