@@ -1,4 +1,5 @@
 import { Scene3D, type UiState } from './scene3d.ts'
+import { FactoryView } from './factory3d.ts'
 import * as sfx from './audio.ts'
 import {
   ARMOR_MULT_PCT, AURA, COLS, FACTORY, INCOME_EVERY_S, LIVES, ROBOTS, ROBOT_KINDS, ROWS, SEND, SUDDEN, TICK_HZ, TOWERS, TOWER_KINDS,
@@ -41,6 +42,7 @@ const laneEl = $('lane'), body = $('body'), banner = $('banner'), toastEl = $('t
 
 const canvas = $<HTMLCanvasElement>('world')
 const world = new Scene3D(canvas)
+const yards = new FactoryView() // 3D factory yards over the Send tab tiles
 const size = () => { world.resize(innerWidth, innerHeight) }
 addEventListener('resize', size); size()
 
@@ -513,10 +515,8 @@ function sendHtml(g: Game, L: Lane): string {
     if (!f) return btn('slot', '+ Build', { arg: String(i), cls: 'tile empty', sub: 'factory' })
     const k = f.kind, r = ROBOTS[k], icon = svgIcon(ROBOT_ICON[k], robotColor(k), 18)
     if (f.build) return btn('noop', `${short(k)}`, { cls: 'tile', off: true, icon, sub: `building ${secsOf(f.build)}` })
-    const built = f.queue.filter(x => x === 0).length // ready to release; the rest still wait to be built
-    const left = f.queue.find(x => x > 0), total = Math.floor(r.buildS * TICK_HZ * FACTORY.buildPctByLevel[f.level - 1] / 100)
-    const bar = left ? `<i class="prog" style="width:${Math.round(100 * (total - left) / total)}%"></i>` : ''
-    return btn('load', `${short(k)}${bar}`, { arg: String(i), cls: 'tile', off: !!canLoad(g, L, i), icon, key: 'QWER'[i], sub: `${r.sendCost}g · max ${waveCap(k, f.level)}<br><b>${built}</b> built<br><b>${f.queue.length - built}</b> queued` })
+    // the queue itself is drawn in 3D over the tile (factory3d.ts): pads, parts piles, robots
+    return btn('load', `${short(k)} <span class="cost">${r.sendCost}g</span>`, { arg: String(i), cls: 'tile fac', off: !!canLoad(g, L, i), key: 'QWER'[i] })
   }).join('')
   const manage = L.slots.map((f, i) => f ? btn('slot', `L${f.level} ⚙`, { arg: String(i), cls: 'mini' }) : '<span></span>').join('')
   return `${info ? `<div class="info">${info}</div>` : ''}<div class="grid four">${tiles}</div><div class="grid four manage">${manage}</div>` +
@@ -710,6 +710,7 @@ function frame(now: number) {
   lastFrame = now
   if (toastUntil && now > toastUntil) { toastEl.hidden = true; toastUntil = 0 }
   if (!g) {
+    yards.render([], 0)
     if (!demo) return world.renderer.clear()
     acc = Math.min(acc + dtMs, DT * 10)
     while (acc >= DT) {
@@ -766,6 +767,12 @@ function frame(now: number) {
   }
   if (stepped) { hud(g); renderPanel() }
   world.render(g, ui, alpha, prev, dtMs / 1000, innerWidth, innerHeight)
+  const L = g.lanes[ME]
+  yards.render([...document.querySelectorAll<HTMLElement>('#body .tile.fac')].reduce((a, el) => {
+    const i = +el.dataset.arg!, f = L.slots[i]
+    if (f) a[i] = { el, kind: f.kind, queue: f.queue, cap: waveCap(f.kind, f.level), color: robotColor(f.kind), total: Math.floor(ROBOTS[f.kind].buildS * TICK_HZ * FACTORY.buildPctByLevel[f.level - 1] / 100) }
+    return a
+  }, [null, null, null, null] as Parameters<typeof yards.render>[0]), dtMs / 1000)
   adapt(dtMs)
 }
 
