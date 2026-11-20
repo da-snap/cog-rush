@@ -67,7 +67,7 @@ let prev = new Map<number, { x: number; y: number }>()
 let drag: { cells: number[]; last: number } | null = null
 let buildKind: TowerKind | null = null // build mode: picked tower, stays picked until cancelled
 let hover: { x: number; y: number } | null = null // cell under the mouse, for the build preview
-let mouse = { x: 0, y: 0, on: false } // last pointer position over the lane (mouse only), for the cost tip
+let mouse = { x: 0, y: 0, on: false } // last mouse position over the lane, for the cost tip
 let sealArmed = -1 // a cell that would seal the lane needs a second click
 let toastUntil = 0
 
@@ -317,7 +317,7 @@ function toast(text: string, ms = 1800) {
 
 const wide = () => innerWidth >= innerHeight * 1.1 // tablet landscape / desktop: both lanes side by side
 const mainLane = () => (wide() ? ME : view)
-const demoUi = (): UiState => ({ me: -1, focus: 0, layout: 'both', free: { x: 0, y: 0, w: innerWidth, h: innerHeight }, mini: null, sel: null, hover: null, buildKind: null, drag: [] })
+const demoUi = (): UiState => ({ me: -1, focus: 0, layout: 'both', free: { x: 0, y: 0, w: innerWidth, h: innerHeight }, mini: null, loupe: null, sel: null, hover: null, buildKind: null, drag: [] })
 function uiState(): UiState {
   const r = laneEl.getBoundingClientRect()
   const mw = Math.round(Math.min(90, r.width * 0.17)), mh = Math.round(mw * 20 / 11.6)
@@ -326,46 +326,37 @@ function uiState(): UiState {
   return {
     me: ME, focus: mainLane(), layout: wide() ? 'both' : 'single', free,
     mini: wide() ? null : { x: Math.round(r.right - mw - 2), y: Math.round(r.top + 8), w: mw, h: mh },
+    loupe: loupeBox(r),
     sel, hover: buildKind && !sel ? hover : null, buildKind: sel ? null : buildKind, drag: drag ? drag.cells : [],
   }
 }
-/** pointer -> cell of my lane (null elsewhere) */
-const cellAt = (e: PointerEvent) => {
-  const c = world.pick(e.clientX, e.clientY, innerWidth, innerHeight)
+/** screen point -> cell of my lane (null elsewhere) */
+const cellAt = (px: number, py: number) => {
+  const c = world.pick(px, py, innerWidth, innerHeight)
   return c && c.lane === ME && mainLane() === ME ? { x: c.x, y: c.y } : null
 }
 
-laneEl.addEventListener('pointerdown', e => {
-  sfx.unlockAudio()
-  if (!g || e.button === 2) return
-  if (world.inMini(e.clientX, e.clientY, uiState())) { view = 1 - view; sel = null; sfx.click(); renderPanel(true); return }
-  const c = cellAt(e)
-  if (!c) return
-  const L = g.lanes[ME], i = c.y * COLS + c.x
-  hover = c
-  if (L.towers[i] && !(buildKind && buildKind !== 'wall' && L.towers[i]!.kind === 'wall')) { // an existing tower: select it for upgrade / sell (a gun picked builds on Walls)
-    sel = sel && sel.x === c.x && sel.y === c.y ? null : c
-    tab = 'build'
-    sfx.click()
-    return renderPanel(true)
-  }
-  sel = null
-  if (!buildKind) { toast('Pick a tower first (1–7)'); sfx.deny(); tab = 'build'; return renderPanel(true) }
-  if (!buildable(c.x, c.y)) { toast('Spawn and exit rows are not buildable'); sfx.deny(); return renderPanel(true) }
-  drag = { cells: [i], last: i }
-  laneEl.setPointerCapture(e.pointerId)
+/** a tap on one of my towers selects it (a picked gun builds on Walls instead); true if it did */
+function trySelect(c: { x: number; y: number }) {
+  const t = g!.lanes[ME].towers[c.y * COLS + c.x]
+  if (!t || (buildKind && buildKind !== 'wall' && t.kind === 'wall')) return false
+  sel = sel && sel.x === c.x && sel.y === c.y ? null : c
+  tab = 'build'
+  sfx.click()
   renderPanel(true)
-})
-
-laneEl.addEventListener('pointermove', e => {
-  if (!g) return
-  const c = cellAt(e)
-  hover = c && mainLane() === ME ? c : null
-  mouse = { x: e.clientX, y: e.clientY, on: e.pointerType === 'mouse' }
-  if (!drag || !c) return
+  return true
+}
+/** can the picked tower go on this cell at all (says why not) */
+function canStart(c: { x: number; y: number }) {
+  sel = null
+  if (!buildKind) { toast('Pick a tower first (1–7)'); sfx.deny(); tab = 'build'; renderPanel(true); return false }
+  if (!buildable(c.x, c.y)) { toast('Spawn and exit rows are not buildable'); sfx.deny(); renderPanel(true); return false }
+  return true
+}
+/** extend the row being dragged to cell c, cell by cell from the last one so fast swipes don't skip */
+function extendDrag(c: { x: number; y: number }) {
   const i = c.y * COLS + c.x
-  if (i === drag.last) return
-  // walk cell by cell from the last cell so fast swipes don't skip
+  if (!drag || !g || i === drag.last) return
   let x = drag.last % COLS, y = Math.floor(drag.last / COLS)
   while (x !== c.x || y !== c.y) {
     if (x !== c.x) x += Math.sign(c.x - x); else y += Math.sign(c.y - y)
@@ -373,21 +364,54 @@ laneEl.addEventListener('pointermove', e => {
     if (buildable(x, y) && !g.lanes[ME].towers[j] && !drag.cells.includes(j)) drag.cells.push(j)
   }
   drag.last = i
+}
+
+// --- mouse: press builds / selects at once, drag paints a row, Esc or right click cancels
+
+laneEl.addEventListener('pointerdown', e => {
+  sfx.unlockAudio()
+  if (!g || e.button === 2 || (e.target as HTMLElement).closest('button')) return
+  if (e.pointerType !== 'mouse') return touchDown(e)
+  if (world.inMini(e.clientX, e.clientY, uiState())) { view = 1 - view; sel = null; sfx.click(); renderPanel(true); return }
+  const c = cellAt(e.clientX, e.clientY)
+  if (!c) return
+  hover = c
+  if (trySelect(c) || !canStart(c)) return
+  const i = c.y * COLS + c.x
+  drag = { cells: [i], last: i }
+  laneEl.setPointerCapture(e.pointerId)
+  renderPanel(true)
 })
-laneEl.addEventListener('pointerleave', () => { mouse.on = false; if (!drag) hover = null })
+
+laneEl.addEventListener('pointermove', e => {
+  if (!g) return
+  if (e.pointerType !== 'mouse') return touchMove(e)
+  const c = cellAt(e.clientX, e.clientY)
+  hover = c
+  mouse = { x: e.clientX, y: e.clientY, on: true }
+  if (c) extendDrag(c)
+})
+laneEl.addEventListener('pointerleave', e => { if (e.pointerType !== 'mouse') return; mouse.on = false; if (!drag) hover = null })
 // right click leaves build mode on desktop
 laneEl.addEventListener('contextmenu', e => { e.preventDefault(); if (drag) cancelDrag(); else stopBuilding() })
 
-laneEl.addEventListener('pointerup', () => {
+laneEl.addEventListener('pointerup', e => {
+  if (e.pointerType !== 'mouse') return touchUp(e)
   if (!drag || !g || !buildKind) return
-  const cells = drag.cells, kind = buildKind
+  const cells = drag.cells
   drag = null
-  const L = g.lanes[ME]
-  if (cells.length === 1) { // one click = one tower; sealing the lane needs a second click on the same cell
+  commit(cells)
+})
+laneEl.addEventListener('pointercancel', e => { if (e.pointerType !== 'mouse') { touches.clear(); aim = null; pinch = null; drag = null; hover = null } })
+
+/** build the picked tower on these cells (one cell = one tower, more = a row) */
+function commit(cells: number[]) {
+  const L = g!.lanes[ME], kind = buildKind!
+  if (cells.length === 1) { // one tower; sealing the lane needs a second tap on the same cell
     const i = cells[0], x = i % COLS, y = Math.floor(i / COLS)
     const why = canBuild(L, x, y, kind)
     if (why) { toast(why); sfx.deny(); sealArmed = -1; return }
-    if (wouldSeal(L, x, y) && sealArmed !== i) { sealArmed = i; toast('This seals your lane! Click again to build anyway', 2500); return }
+    if (wouldSeal(L, x, y) && sealArmed !== i) { sealArmed = i; toast('This seals your lane! Place it again to build anyway', 2500); return }
     sealArmed = -1
     pending.push({ p: ME, t: 'build', x, y, kind })
     return
@@ -406,7 +430,89 @@ laneEl.addEventListener('pointerup', () => {
     built++
   }
   toast(`Row: ${built} ${TOWERS[kind].name}${built === 1 ? '' : 's'}${skipped ? `, skipped ${skipped} (would seal or blocked)` : ''}${short ? ', out of parts' : ''}`)
-})
+}
+
+// --- touch: nothing happens on touch-down. The finger aims with a magnifier above it, lifting builds
+// (or selects a tower), sliding off the lane cancels. Hold still at touch-down to paint a row instead.
+// Two fingers pinch-zoom and pan the lane (and cancel the aim).
+const touches = new Map<number, { x: number; y: number }>()
+let aim: { id: number; x: number; y: number; t0: number; moved: boolean; off: boolean; cell: { x: number; y: number } | null } | null = null
+let pinch: { d: number; x: number; y: number } | null = null
+const HOLD_MS = 400, LOUPE = 132, MAG = 2.6
+const two = () => { const [a, b] = [...touches.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+
+function touchDown(e: PointerEvent) {
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY })
+  laneEl.setPointerCapture(e.pointerId)
+  if (touches.size === 2) { aim = null; drag = null; hover = null; pinch = two(); return }
+  if (touches.size > 2) return
+  if (world.inMini(e.clientX, e.clientY, uiState())) { touches.delete(e.pointerId); view = 1 - view; sel = null; sfx.click(); renderPanel(true); return }
+  aim = { id: e.pointerId, x: e.clientX, y: e.clientY, t0: performance.now(), moved: false, off: false, cell: cellAt(e.clientX, e.clientY) }
+  hover = aim.cell
+}
+function touchMove(e: PointerEvent) {
+  const p = touches.get(e.pointerId)
+  if (!p) return
+  p.x = e.clientX; p.y = e.clientY
+  if (pinch && touches.size >= 2) {
+    const n = two()
+    world.zoomTo(world.zoom * n.d / pinch.d)
+    world.panBy(pinch.x, pinch.y, n.x - pinch.x, n.y - pinch.y, innerWidth, innerHeight)
+    pinch = n
+    zoomLabel()
+    return
+  }
+  if (aim?.id !== e.pointerId) return
+  if (Math.hypot(e.clientX - aim.x, e.clientY - aim.y) > 8) aim.moved = true
+  if (aim.moved) { aim.x = e.clientX; aim.y = e.clientY }
+  aimAt()
+}
+/** re-pick the aimed cell (the finger moved, or the board panned under it) */
+function aimAt() {
+  if (!aim) return
+  const r = laneEl.getBoundingClientRect()
+  aim.off = aim.x < r.left || aim.x > r.right || aim.y < r.top || aim.y > r.bottom
+  aim.cell = aim.off ? null : cellAt(aim.x, aim.y)
+  hover = aim.cell
+  if (drag && aim.cell) extendDrag(aim.cell)
+}
+function touchUp(e: PointerEvent) {
+  touches.delete(e.pointerId)
+  if (pinch) { if (!touches.size) pinch = null; return }
+  if (!aim || aim.id !== e.pointerId || !g) return
+  const a = aim, row = drag
+  aim = null; drag = null; hover = null
+  if (a.off || !a.cell) { if (buildKind || row) toast(row ? 'Row cancelled' : 'Cancelled'); return }
+  if (row && row.cells.length > 1 && buildKind) return commit(row.cells)
+  if (trySelect(a.cell) || !canStart(a.cell)) return
+  commit([a.cell.y * COLS + a.cell.x])
+}
+/** per frame while aiming: hold-to-row, and when zoomed in, scroll the lane at its top / bottom edge */
+function aimTick(dt: number) {
+  if (!aim || !g) return
+  const c = aim.cell
+  if (!drag && !aim.moved && c && buildKind && performance.now() - aim.t0 > HOLD_MS && buildable(c.x, c.y)) {
+    const t = g.lanes[ME].towers[c.y * COLS + c.x]
+    if (!t || (buildKind !== 'wall' && t.kind === 'wall')) { const i = c.y * COLS + c.x; drag = { cells: [i], last: i }; navigator.vibrate?.(15) }
+  }
+  if (world.zoom > 1.01 && aim.moved) {
+    const r = laneEl.getBoundingClientRect(), edge = 56
+    const v = aim.y < r.top + edge ? 1 : aim.y > r.bottom - edge ? -1 : 0
+    if (v && !aim.off) { world.panBy(aim.x, aim.y, 0, v * 260 * dt, innerWidth, innerHeight); aimAt() }
+  }
+}
+function loupeBox(r: DOMRect): UiState['loupe'] {
+  if (!aim || aim.off || (!aim.moved && performance.now() - aim.t0 < 120)) return null
+  let x = aim.x - LOUPE / 2, y = aim.y - LOUPE - 64 // above the finger, clear of the fingertip
+  if (y < r.top + 4) { y = aim.y - LOUPE / 2; x = aim.x < innerWidth / 2 ? aim.x + 56 : aim.x - 56 - LOUPE } // no room: beside it
+  x = Math.max(4, Math.min(innerWidth - LOUPE - 4, x)); y = Math.max(r.top + 4, y)
+  return { x: Math.round(x), y: Math.round(y), size: LOUPE, px: aim.x, py: aim.y, mag: Math.max(1.5, MAG / world.zoom) } // about 3 cells across at any zoom
+}
+
+// zoom button (phone): whole lane <-> close-up, pinch sets anything between
+const zoomBtn = $<HTMLButtonElement>('zoomBtn')
+function zoomLabel() { zoomBtn.textContent = world.zoom > 1.01 ? '−' : '+'; zoomBtn.setAttribute('aria-label', world.zoom > 1.01 ? 'Show whole lane' : 'Zoom in on the lane') }
+zoomBtn.onclick = () => { world.zoomTo(world.zoom > 1.01 ? 1 : 1.8); zoomLabel(); sfx.click() }
 
 function cancelDrag() {
   if (!drag) return
@@ -419,23 +525,31 @@ function pickTower(k: TowerKind, toggle = true) {
   sel = null; sealArmed = -1; tab = 'build'; view = ME
   renderPanel(true)
 }
-/** small tip by the mouse: the picked tower's cost (red when short of parts), and that a Wall takes a tower */
-const tipEl = $('tip')
-function costTip(g: Game) {
-  const L = g.lanes[ME], t = hover && !sel && !drag && mouse.on ? L.towers[hover.y * COLS + hover.x] : null
+/** tip by the mouse, or under the touch magnifier: the picked tower's cost (red when short of parts), Wall hints, row and cancel hints */
+const tipEl = $('tip'), loupeEl = $('loupe')
+function costTip(g: Game, ui: UiState) {
+  const l = ui.loupe
+  loupeEl.hidden = !l
+  if (l) Object.assign(loupeEl.style, { left: l.x + 'px', top: l.y + 'px', width: l.size + 'px', height: l.size + 'px' })
+  const L = g.lanes[ME], on = mouse.on || !!l || !!aim?.off
+  const t = hover && !sel && on ? L.towers[hover.y * COLS + hover.x] : null
   let text = '', no = false
-  if (hover && !sel && !drag && mouse.on && buildable(hover.x, hover.y)) {
+  if (aim?.off) text = drag ? 'Lift to cancel the row' : buildKind ? 'Lift to cancel' : ''
+  else if (drag && l) text = drag.cells.length > 1 ? `Row: ${drag.cells.length} ${TOWERS[buildKind!].name}s · lift to build, slide off to cancel` : 'Row: drag to paint, slide off to cancel'
+  else if (hover && !sel && !drag && on && buildable(hover.x, hover.y)) {
     if (buildKind && (!t || (t.kind === 'wall' && buildKind !== 'wall'))) {
       const cost = buildCost(L, hover.x, hover.y, buildKind)
       no = L.gold < cost
       text = `${TOWERS[buildKind].name}${t ? ' on Wall' : ''} ${cost}p` + (no ? ` · need ${cost - Math.floor(L.gold)}p more` : '')
-    } else if (t?.kind === 'wall') text = buildKind === 'wall' ? 'Wall · pick a gun (2–7) to build on it' : 'Wall · click to build a tower on it'
+    } else if (t?.kind === 'wall') text = buildKind === 'wall' ? 'Wall · pick a gun (2–7) to build on it' : `Wall · ${l ? 'tap' : 'click'} to build a tower on it`
   }
   tipEl.hidden = !text
   if (!text) return
   tipEl.textContent = text
   tipEl.classList.toggle('no', no)
-  tipEl.style.left = mouse.x + 14 + 'px'; tipEl.style.top = mouse.y + 14 + 'px'
+  if (l) { tipEl.style.left = Math.max(4, Math.min(innerWidth - tipEl.offsetWidth - 4, l.x + l.size / 2 - tipEl.offsetWidth / 2)) + 'px'; tipEl.style.top = l.y + l.size + 4 + 'px' }
+  else if (aim) { tipEl.style.left = Math.max(4, Math.min(innerWidth - tipEl.offsetWidth - 4, aim.x - tipEl.offsetWidth / 2)) + 'px'; tipEl.style.top = aim.y - 60 + 'px' }
+  else { tipEl.style.left = mouse.x + 14 + 'px'; tipEl.style.top = mouse.y + 14 + 'px' }
 }
 function stopBuilding() {
   buildKind = null; sealArmed = -1
@@ -496,7 +610,7 @@ function buildHtml(g: Game, L: Lane): string {
   if (!t) {
     const k = buildKind
     const msg = L.sealed ? '<span class="warn">Lane sealed: Breach mode! Income frozen, leaks cost double.</span>'
-      : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · click for one, drag for a row`
+      : k ? `Building <b style="color:${hex(towerColor(k))}">${TOWERS[k].name}</b> · ${matchMedia('(pointer: coarse)').matches ? 'aim and lift for one, hold then drag for a row' : 'click for one, drag for a row'}`
       : 'Pick a tower to build · click a placed tower to upgrade or sell'
     return `<div class="info">${msg}</div><div class="grid seven">` +
       TOWER_KINDS.map((x, i) => `<button data-act="pick" data-arg="${x}" class="pick ${x === k ? 'sel' : ''}" ${L.gold < TOWERS[x].cost && x !== k ? 'style="opacity:.45"' : ''}><span class="ic">${svgIcon(TOWER_ICON[x], towerColor(x), 20)}</span>${TOWERS[x].name}<span class="cost"${L.gold < TOWERS[x].cost ? ' style="color:var(--rogue)"' : ''}>${TOWERS[x].cost}p</span><kbd>${i + 1}</kbd></button>`).join('') +
@@ -786,8 +900,9 @@ function frame(now: number) {
     alpha = running ? acc / DT : 1
   }
   if (stepped) { hud(g); renderPanel() }
+  aimTick(dtMs / 1000)
   world.render(g, ui, alpha, prev, dtMs / 1000, innerWidth, innerHeight)
-  costTip(g)
+  costTip(g, ui)
   const L = g.lanes[ME]
   yards.render([...document.querySelectorAll<HTMLElement>('#body .tile.fac')].reduce((a, el) => {
     const i = +el.dataset.arg!, f = L.slots[i]

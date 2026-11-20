@@ -23,6 +23,7 @@ export interface UiState {
   hover: { x: number; y: number } | null; buildKind: TowerKind | null; drag: number[]
   free: { x: number; y: number; w: number; h: number } // screen rect not covered by HUD
   mini: { x: number; y: number; w: number; h: number } | null // phone: small view of the other lane
+  loupe: { x: number; y: number; size: number; px: number; py: number; mag: number } | null // touch aim: screen box showing the area around (px, py) magnified
 }
 
 // --- instanced part batches ----------------------------------------------------
@@ -283,6 +284,10 @@ export class Scene3D {
   rv = new Map<number, RobotVis>(); tv = new Map<number, TowerVis>()
   time = 0; shakeAmt = 0
   cam = { x: 5.5, z: 10, dist: 30, tx: 5.5, tz: 10, tdist: 30, ready: false }
+  // phone zoom: 1 = whole lane; pan is a world offset from the lane centre, clamped to the lane
+  zoom = 1; panX = 0; panZ = 0
+  private fitDist = 30; private snap = false
+  private loupeCam = new THREE.PerspectiveCamera()
   pathCache = new Map<string, number[]>()
 
   constructor(canvas: HTMLCanvasElement) {
@@ -369,8 +374,13 @@ export class Scene3D {
     // shift the projection centre into the middle of the free rect
     this.camera.setViewOffset(W, H, W / 2 - (fr.x + fr.w / 2), H / 2 - (fr.y + fr.h / 2), W, H)
     const key = `${W}x${H}:${fr.x},${fr.y},${fr.w},${fr.h}:${x0},${x1}`
-    if (key === this.fitKey) return
-    this.fitKey = key
+    if (key !== this.fitKey) { this.fitKey = key; this.fit(x0, x1, W, H, fr) }
+    const z = both ? 1 : this.zoom, m = 1 - 1 / z
+    this.panX = Math.max(-(COLS / 2) * m, Math.min((COLS / 2) * m, this.panX))
+    this.panZ = Math.max(-(ROWS / 2) * m, Math.min((ROWS / 2) * m, this.panZ))
+    this.cam.tx += this.panX; this.cam.tz += this.panZ; this.cam.tdist = this.fitDist / z
+  }
+  private fit(x0: number, x1: number, W: number, H: number, fr: UiState['free']) {
     // binary search the distance at which all four lane corners land inside the free rect
     const corners = [[x0, -0.6], [x1, -0.6], [x0, ROWS + 0.6], [x1, ROWS + 0.6]].map(([x, z]) => new THREE.Vector3(x, 0, z))
     const fits = (d: number) => {
@@ -383,9 +393,22 @@ export class Scene3D {
     }
     let lo = 4, hi = 300
     for (let i = 0; i < 24; i++) { const mid = (lo + hi) / 2; if (fits(mid)) hi = mid; else lo = mid }
-    this.cam.tdist = hi
+    this.fitDist = hi
     if (!this.cam.ready) { this.cam.x = this.cam.tx; this.cam.z = this.cam.tz; this.cam.dist = hi; this.cam.ready = true }
   }
+
+  private ground(px: number, py: number, W: number, H: number) {
+    const ray = new THREE.Raycaster(), hit = new THREE.Vector3()
+    ray.setFromCamera(new THREE.Vector2(px / W * 2 - 1, -(py / H) * 2 + 1), this.camera)
+    return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)
+  }
+  /** Drag the board by a screen delta (two-finger pan); the camera follows at once. */
+  panBy(px: number, py: number, dx: number, dy: number, W: number, H: number) {
+    const a = this.ground(px, py, W, H)?.clone(), b = this.ground(px + dx, py + dy, W, H)
+    if (!a || !b) return
+    this.panX += a.x - b.x; this.panZ += a.z - b.z; this.snap = true
+  }
+  zoomTo(z: number) { this.zoom = Math.max(1, Math.min(2.5, z)); this.snap = true }
 
   private place(x: number, z: number, dist: number, sx: number, sy: number) {
     const pitch = THREE.MathUtils.degToRad(52)
@@ -399,10 +422,8 @@ export class Scene3D {
 
   /** Screen point -> lane cell, or null. */
   pick(px: number, py: number, W: number, H: number): { lane: number; x: number; y: number } | null {
-    const ray = new THREE.Raycaster()
-    ray.setFromCamera(new THREE.Vector2(px / W * 2 - 1, -(py / H) * 2 + 1), this.camera)
-    const hit = new THREE.Vector3()
-    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return null
+    const hit = this.ground(px, py, W, H)
+    if (!hit) return null
     const lane = Math.floor((hit.x + (LANE_GAP - COLS) / 2) / LANE_GAP)
     const x = Math.floor(hit.x - lane * LANE_GAP), y = Math.floor(hit.z)
     return lane >= 0 && lane < 2 && x >= 0 && x < COLS && y >= 0 && y < ROWS ? { lane, x, y } : null
@@ -542,7 +563,8 @@ export class Scene3D {
     const t = this.time
     this.frame(ui, W, H)
     // smooth camera
-    const k = 1 - Math.exp(-dt * 5)
+    const k = this.snap ? 1 : 1 - Math.exp(-dt * 5)
+    this.snap = false
     this.cam.x += (this.cam.tx - this.cam.x) * k; this.cam.z += (this.cam.tz - this.cam.z) * k; this.cam.dist += (this.cam.tdist - this.cam.dist) * k
     const sx = (Math.random() - 0.5) * this.shakeAmt * 0.6, sy = (Math.random() - 0.5) * this.shakeAmt * 0.6
     this.shakeAmt = Math.max(0, this.shakeAmt - dt * 2.5)
@@ -771,6 +793,16 @@ export class Scene3D {
       r.setScissor(m.x + 2, H - m.y - m.h + 2, m.w - 4, m.h - 4); r.setViewport(m.x + 2, H - m.y - m.h + 2, m.w - 4, m.h - 4)
       r.clear()
       r.render(this.scene, this.mini)
+      r.setScissorTest(false)
+    }
+    // touch aim: the same view, magnified around the finger, drawn in a box above it
+    if (ui.loupe) {
+      const l = ui.loupe, src = l.size / l.mag, v = this.camera.view!, c = this.loupeCam.copy(this.camera)
+      c.setViewOffset(v.fullWidth, v.fullHeight, v.offsetX + l.px - src / 2, v.offsetY + l.py - src / 2, src, src)
+      r.setScissorTest(true)
+      r.setScissor(l.x, H - l.y - l.size, l.size, l.size); r.setViewport(l.x, H - l.y - l.size, l.size, l.size)
+      r.clear()
+      r.render(this.scene, c)
       r.setScissorTest(false)
     }
   }
